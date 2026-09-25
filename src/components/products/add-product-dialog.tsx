@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useCallback, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { z } from "zod";
@@ -45,7 +45,7 @@ interface AddProductDialogProps {
  */
 export function AddProductDialog({ open, onOpenChange }: AddProductDialogProps) {
   const createProduct = useCreateProduct();
-  const [formError, setFormError] = React.useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -58,7 +58,7 @@ export function AddProductDialog({ open, onOpenChange }: AddProductDialogProps) 
     defaultValues: { sku: "", name: "", description: "", status: "DRAFT" },
   });
 
-  const close = React.useCallback(() => {
+  const close = useCallback(() => {
     if (isSubmitting) return;
     setFormError(null);
     reset();

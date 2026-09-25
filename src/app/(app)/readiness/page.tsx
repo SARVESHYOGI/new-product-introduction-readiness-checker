@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ClipboardCheck, LoaderCircle, CircleAlert } from "lucide-react";
 import { useBoms, useLines, useProducts, useRoutings, useRunCheck, useMe } from "@/lib/client/queries";
@@ -26,13 +26,13 @@ export default function RunCheckPage() {
   const searchParams = useSearchParams();
   const runCheck = useRunCheck();
 
-  const [productId, setProductId] = React.useState(searchParams.get("product") ?? "");
-  const [bomVersionId, setBomVersionId] = React.useState("");
-  const [routingId, setRoutingId] = React.useState("");
-  const [lineId, setLineId] = React.useState("");
+  const [productId, setProductId] = useState(searchParams.get("product") ?? "");
+  const [bomVersionId, setBomVersionId] = useState("");
+  const [routingId, setRoutingId] = useState("");
+  const [lineId, setLineId] = useState("");
 
-  const [runError, setRunError] = React.useState<string | null>(null);
-  const [phase, setPhase] = React.useState(-1);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [phase, setPhase] = useState(-1);
 
   const { data: user, isLoading: isUserLoading } = useMe();
   const canRunChecks = user?.role === "ADMIN" || user?.role === "ENGINEER";
@@ -56,7 +56,7 @@ export default function RunCheckPage() {
     setRoutingId("");
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!canRun) return;
 

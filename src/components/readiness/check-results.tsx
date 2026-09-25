@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useMemo, useState } from "react";
 import {
   CircleCheck,
   CircleX,
@@ -58,7 +58,7 @@ interface BlockerViewProps {
 }
 
 export function CheckResults({ check }: BlockerViewProps) {
-  const [openResult, setOpenResult] = React.useState<CheckResult | null>(null);
+  const [openResult, setOpenResult] = useState<CheckResult | null>(null);
 
   const orderedCategories = [
     ...CATEGORY_ORDER.filter((c) => check.categoryStatuses[c]),
@@ -278,7 +278,7 @@ interface BlockerDialogProps {
 }
 
 function BlockerDialog({ result, onClose, checks }: BlockerDialogProps) {
-  const related = React.useMemo(() => {
+  const related = useMemo(() => {
     if (!result || !result.causeRuleCode) return undefined;
     return checks.find((c) => resultKeyOf(c) === result.causeRuleCode);
   }, [result, checks]);

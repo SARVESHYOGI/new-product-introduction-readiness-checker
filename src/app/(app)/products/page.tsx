@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Search, Boxes, Plus } from "lucide-react";
 import { useMe, useProducts } from "@/lib/client/queries";
@@ -19,8 +19,8 @@ const productStatusVariant = {
 } as const;
 
 export default function ProductsPage() {
-  const [search, setSearch] = React.useState("");
-  const [showAdd, setShowAdd] = React.useState(false);
+  const [search, setSearch] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
   const { data: user } = useMe();
   const { data: products, isLoading, isError, refetch } = useProducts(search || undefined);
 
