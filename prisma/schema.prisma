@@ -1,0 +1,403 @@
+// NPI Readiness Checker — Prisma schema (PostgreSQL)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum BOMStatus {
+  DRAFT
+  ACTIVE
+  OBSOLETE
+}
+
+enum RoutingStatus {
+  DRAFT
+  ACTIVE
+  OBSOLETE
+}
+
+enum StationStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum LineStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum WorkInstructionStatus {
+  DRAFT
+  ACTIVE
+  OBSOLETE
+}
+
+enum OperatorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum IdentifierRangeStatus {
+  ACTIVE
+  INACTIVE
+  EXHAUSTED
+}
+
+enum InventoryStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MappingType {
+  OUTPUT
+}
+
+enum ReadinessCheckStatus {
+  READY
+  NOT_READY
+  BLOCKED
+  ERROR
+}
+
+enum ReadinessResultStatus {
+  PASS
+  WARNING
+  FAIL
+}
+
+enum Severity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum UserRole {
+  ADMIN
+  ENGINEER
+  VIEWER
+}
+
+// ---------------------------------------------------------------------------
+// Products & manufacturing configuration
+// ---------------------------------------------------------------------------
+
+model Product {
+  id          String        @id @default(cuid())
+  sku         String        @unique
+  name        String
+  description String?
+  status      ProductStatus @default(DRAFT)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  bomVersions       BOMVersion[]
+  routings          Routing[]
+  identifierRanges  IdentifierRange[]
+  inventoryMappings ProductInventoryMapping[]
+  readinessChecks   ReadinessCheck[]
+
+  @@index([status])
+  @@index([updatedAt])
+}
+
+model BOMVersion {
+  id            String    @id @default(cuid())
+  productId     String
+  version       String
+  status        BOMStatus @default(DRAFT)
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  product Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  items   BOMItem[]
+
+  readinessChecks ReadinessCheck[]
+
+  @@unique([productId, version])
+  @@index([productId, status])
+}
+
+model BOMItem {
+  id            String  @id @default(cuid())
+  bomVersionId  String
+  componentSku  String
+  componentName String
+  quantity      Decimal @db.Decimal(12, 4)
+  unit          String
+  isRequired    Boolean @default(true)
+
+  bomVersion BOMVersion @relation(fields: [bomVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([bomVersionId, componentSku])
+  @@index([bomVersionId])
+}
+
+model Routing {
+  id        String        @id @default(cuid())
+  productId String
+  code      String
+  version   String
+  status    RoutingStatus @default(DRAFT)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  product    Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  operations RoutingOperation[]
+
+  readinessChecks ReadinessCheck[]
+
+  @@unique([productId, code])
+  @@index([productId, status])
+}
+
+model RoutingOperation {
+  id                       String  @id @default(cuid())
+  routingId                String
+  sequence                 Int
+  operationCode            String
+  operationName            String
+  standardCycleTimeSeconds Int?
+  required                 Boolean @default(true)
+  stationId                String?
+
+  routing          Routing           @relation(fields: [routingId], references: [id], onDelete: Cascade)
+  station          Station?          @relation(fields: [stationId], references: [id], onDelete: SetNull)
+  workInstructions WorkInstruction[]
+
+  @@unique([routingId, sequence])
+  @@index([routingId])
+  @@index([stationId])
+}
+
+model Line {
+  id       String     @id @default(cuid())
+  code     String     @unique
+  name     String
+  status   LineStatus @default(ACTIVE)
+  stations Station[]
+
+  readinessChecks ReadinessCheck[]
+
+  @@index([status])
+}
+
+model Station {
+  id           String        @id @default(cuid())
+  code         String        @unique
+  name         String
+  status       StationStatus @default(ACTIVE)
+  lineId       String?
+  capabilities String[]
+
+  line       Line?                       @relation(fields: [lineId], references: [id], onDelete: SetNull)
+  operations RoutingOperation[]
+  assignments OperatorStationAssignment[]
+
+  @@index([lineId, status])
+}
+
+model WorkInstruction {
+  id                 String                @id @default(cuid())
+  routingOperationId String
+  title              String
+  content            String
+  version            Int
+  status             WorkInstructionStatus @default(DRAFT)
+  required           Boolean               @default(true)
+
+  routingOperation RoutingOperation @relation(fields: [routingOperationId], references: [id], onDelete: Cascade)
+
+  @@unique([routingOperationId, version])
+  @@index([routingOperationId, status])
+}
+
+model Operator {
+  id           String         @id @default(cuid())
+  employeeCode String         @unique
+  name         String
+  status       OperatorStatus @default(ACTIVE)
+
+  assignments OperatorStationAssignment[]
+
+  @@index([status])
+}
+
+model OperatorStationAssignment {
+  id         String           @id @default(cuid())
+  operatorId String
+  stationId  String
+  validFrom  DateTime
+  validTo    DateTime
+  status     AssignmentStatus @default(ACTIVE)
+
+  operator Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  station  Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@index([stationId, status])
+  @@index([operatorId, status])
+  @@index([validFrom, validTo])
+}
+
+model IdentifierRange {
+  id            String                @id @default(cuid())
+  productId     String
+  prefix        String
+  startNumber   Int
+  endNumber     Int
+  currentNumber Int
+  status        IdentifierRangeStatus @default(ACTIVE)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, prefix])
+  @@index([productId, status])
+}
+
+model InventoryItem {
+  id      String          @id @default(cuid())
+  sku     String          @unique
+  name    String
+  status  InventoryStatus @default(ACTIVE)
+
+  productMappings ProductInventoryMapping[]
+
+  @@index([status])
+}
+
+model ProductInventoryMapping {
+  id              String          @id @default(cuid())
+  productId       String
+  inventoryItemId String
+  mappingType     MappingType     @default(OUTPUT)
+  status          InventoryStatus @default(ACTIVE)
+
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, mappingType])
+  @@index([inventoryItemId])
+}
+
+// ---------------------------------------------------------------------------
+// Readiness checks (immutable after completion)
+// ---------------------------------------------------------------------------
+
+model ReadinessCheck {
+  id            String               @id @default(cuid())
+  productId     String
+  bomVersionId  String
+  routingId     String
+  lineId        String
+  status        ReadinessCheckStatus
+  score         Int
+  passedCount   Int
+  failedCount   Int
+  warningCount  Int
+  blockingCount Int
+  startedAt     DateTime             @default(now())
+  completedAt   DateTime
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  product    Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  bomVersion BOMVersion        @relation(fields: [bomVersionId], references: [id], onDelete: Restrict)
+  routing    Routing           @relation(fields: [routingId], references: [id], onDelete: Restrict)
+  line       Line              @relation(fields: [lineId], references: [id], onDelete: Restrict)
+  results    ReadinessResult[]
+
+  @@index([productId, createdAt])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ReadinessResult {
+  id                 String               @id @default(cuid())
+  readinessCheckId   String
+  ruleCode           String
+  category           String
+  status             ReadinessResultStatus
+  severity           Severity
+  title              String
+  message            String
+  affectedEntityType String?
+  affectedEntityId   String?
+  causeRuleCode      String?
+  remediation        String?
+  isBlocking         Boolean              @default(false)
+  createdAt          DateTime             @default(now())
+
+  readinessCheck ReadinessCheck @relation(fields: [readinessCheckId], references: [id], onDelete: Cascade)
+
+  @@index([readinessCheckId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit & access control
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  role         UserRole
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions Session[]
+
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
