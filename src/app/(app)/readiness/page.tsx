@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ClipboardCheck, LoaderCircle, CircleAlert } from "lucide-react";
-import { useBoms, useLines, useProducts, useRoutings, useRunCheck } from "@/lib/client/queries";
+import { useBoms, useLines, useProducts, useRoutings, useRunCheck, useMe } from "@/lib/client/queries";
 import { ApiClientError } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +33,9 @@ export default function RunCheckPage() {
 
   const [runError, setRunError] = React.useState<string | null>(null);
   const [phase, setPhase] = React.useState(-1);
+
+  const { data: user, isLoading: isUserLoading } = useMe();
+  const canRunChecks = user?.role === "ADMIN" || user?.role === "ENGINEER";
 
   const products = useProducts();
   const boms = useBoms(productId || null);
@@ -93,8 +96,22 @@ export default function RunCheckPage() {
         </p>
       </div>
 
-      {isLoadingOptions && !products.data ? (
+      {isUserLoading ? (
+        <LoadingState label="Checking your access…" />
+      ) : isLoadingOptions && !products.data ? (
         <LoadingState label="Loading configuration options…" />
+      ) : !canRunChecks ? (
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <div>
+                <p className="font-medium">Read-only access</p>
+                <p className="text-muted-foreground">Only engineers and administrators can run readiness checks. View results from the history or dashboard.</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       ) : products.isError || !products.data ? (
         <ErrorState
           title="Unable to load products"
@@ -110,7 +127,8 @@ export default function RunCheckPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-5">
+              {canRunChecks ? (
+                <form onSubmit={handleSubmit} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="product">Product</Label>
                   <Select
@@ -227,6 +245,11 @@ export default function RunCheckPage() {
                   {runCheck.isPending ? "Checking…" : "Run Readiness Check"}
                 </Button>
               </form>
+              ) : (
+                <div className="rounded-md border border-muted bg-muted/40 p-4 text-sm text-muted-foreground">
+                  <p>Only engineers and administrators can run readiness checks.</p>
+                </div>
+              )}
 
               {runCheck.isPending && phase >= 0 ? (
                 <div

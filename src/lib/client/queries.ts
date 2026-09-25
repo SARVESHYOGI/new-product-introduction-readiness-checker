@@ -189,7 +189,11 @@ export function useLogin() {
         body: credentials,
       }).then((d) => d.user),
     onSuccess: (user) => {
-      queryClient.setQueryData(queryKeys.me, { user });
+      // Cache the *unwrapped* user — the same shape useMe()'s queryFn stores.
+      // Caching { user } here breaks every useMe() consumer after a client-side
+      // navigation (role becomes undefined) because data is read straight from
+      // this cache without a refetch.
+      queryClient.setQueryData(queryKeys.me, user);
     },
   });
 }

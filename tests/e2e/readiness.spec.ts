@@ -41,12 +41,17 @@ test("engineer runs a readiness check and views blocker remediation", async ({ p
   await page.goto("/readiness");
   await expect(page).toHaveURL(/\/login/);
 
-  // 2. Sign in as an engineer.
+  // 2. Sign in as an engineer. The login form redirects *client-side* back to
+  // /readiness (from=/readiness), leaving the auth cache hot — exactly the
+  // path that regressed and wrongly showed "Read-only access" to admins and
+  // engineers (useLogin had cached a wrapped user object). This is a nav
+  // without a full page reload, so the role gate must come from the cache.
   await signIn(page);
-  await page.goto("/readiness");
+  await expect(page).toHaveURL(/\/readiness/);
   await expect(
     page.getByRole("heading", { name: "Run Readiness Check" })
   ).toBeVisible();
+  await expect(page.getByText("Read-only access")).toHaveCount(0);
 
   // 3–6. Select product, BOM version, routing and production line.
   await selectOption(page, "Product", CONFIG.product);
@@ -110,7 +115,10 @@ test("admins can create a product; engineers cannot", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 
-  await page.goto("/products");
+  // Navigate client-side via the nav link (no reload) — the role gate must be
+  // answered from the auth cache, not a fresh /api/auth/me fetch.
+  await page.getByRole("link", { name: "Products", exact: true }).click();
+  await expect(page).toHaveURL(/\/products$/);
   const addButton = page.getByRole("button", { name: "Add product" });
   await expect(addButton).toBeVisible();
 
@@ -135,6 +143,8 @@ test("admins can create a product; engineers cannot", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 
-  await page.goto("/products");
+  // Same client-side nav — engineers must not be offered the admin action.
+  await page.getByRole("link", { name: "Products", exact: true }).click();
+  await expect(page).toHaveURL(/\/products$/);
   await expect(page.getByRole("button", { name: "Add product" })).toHaveCount(0);
 });
