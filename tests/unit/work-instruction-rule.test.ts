@@ -54,7 +54,7 @@ describe("Rule 3 — Work Instructions", () => {
     });
   });
 
-  it("WARNs when multiple active versions exist for one operation", async () => {
+  it("FAILs (CRITICAL, blocking) when multiple active versions exist for one operation", async () => {
     const results = await workInstructionRule.evaluate(
       baseContext({
         workInstructionsByOperation: new Map([
@@ -62,11 +62,64 @@ describe("Rule 3 — Work Instructions", () => {
         ]),
       })
     );
-    const warn = find(results, "WORK_INSTRUCTION_MULTIPLE_ACTIVE");
-    expect(warn).toMatchObject({ status: "WARNING", severity: "MEDIUM", isBlocking: false });
-    // The presence of a valid instruction still yields no failures — only the
-    // informational warning about competing active versions.
-    expect(results.filter((r) => r.status === "FAIL")).toHaveLength(0);
+    // Safety Rule 3: two simultaneously published versions leave the line floor
+    // unable to tell which document is authoritative, so it blocks rather than
+    // warns.
+    expect(find(results, "WORK_INSTRUCTION_MULTIPLE_ACTIVE")).toMatchObject({
+      status: "FAIL",
+      severity: "CRITICAL",
+      isBlocking: true,
+    });
+    // ...and the operation must not also be reported as OK.
+    expect(find(results, "WORK_INSTRUCTION_OK")).toBeFalsy();
+  });
+
+  it("FAILs when the only active instruction is marked as not required", async () => {
+    const results = await workInstructionRule.evaluate(
+      baseContext({
+        workInstructionsByOperation: new Map([
+          ["op_1", [workInstruction({ required: false })]],
+        ]),
+      })
+    );
+    const failure = find(results, "WORK_INSTRUCTION_EXISTS");
+    expect(failure).toMatchObject({ status: "FAIL", severity: "HIGH", isBlocking: true });
+    expect(failure?.message).toContain("not required");
+  });
+
+  it("does not let an optional active instruction satisfy a required operation", async () => {
+    const onlyOptional = await workInstructionRule.evaluate(
+      baseContext({
+        workInstructionsByOperation: new Map([
+          ["op_1", [workInstruction({ required: false, id: "wi_opt" })]],
+        ]),
+      })
+    );
+    expect(find(onlyOptional, "WORK_INSTRUCTION_EXISTS")).toBeTruthy();
+
+    const withRequiredAndOptional = await workInstructionRule.evaluate(
+      baseContext({
+        workInstructionsByOperation: new Map([
+          [
+            "op_1",
+            [
+              workInstruction({ id: "wi_req" }),
+              workInstruction({ id: "wi_opt", required: false, version: 2 }),
+            ],
+          ],
+        ]),
+      })
+    );
+    // The optional sibling is ignored for the required-operation check, but it
+    // still contributes to the safety invariant that an operation may not have
+    // two simultaneously active versions.
+    expect(find(withRequiredAndOptional, "WORK_INSTRUCTION_EXISTS")).toBeFalsy();
+    expect(find(withRequiredAndOptional, "WORK_INSTRUCTION_MULTIPLE_ACTIVE")).toMatchObject({
+      status: "FAIL",
+      severity: "CRITICAL",
+      isBlocking: true,
+    });
+    expect(find(withRequiredAndOptional, "WORK_INSTRUCTION_OK")).toBeFalsy();
   });
 
   it("FAILs when the active work instruction content is empty", async () => {

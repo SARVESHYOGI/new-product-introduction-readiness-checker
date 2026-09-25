@@ -33,6 +33,14 @@ export class ApiError extends Error {
     return new ApiError(404, code, message);
   }
 
+  /**
+   * 409 — the request was well-formed but conflicts with current state
+   * (a duplicate unique value, or a referential constraint that blocks the write).
+   */
+  static conflict(code: string, message: string, details?: unknown): ApiError {
+    return new ApiError(409, code, message, details);
+  }
+
   static tooLarge(code = "PAYLOAD_TOO_LARGE", message = "Request body exceeds the allowed size."): ApiError {
     return new ApiError(413, code, message);
   }

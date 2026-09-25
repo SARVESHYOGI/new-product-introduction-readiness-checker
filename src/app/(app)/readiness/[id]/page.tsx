@@ -2,7 +2,7 @@
 
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Settings2 } from "lucide-react";
 import { useCheck } from "@/lib/client/queries";
 import { formatDateTime } from "@/lib/utils";
 import { CheckResults } from "@/components/readiness/check-results";
@@ -47,9 +47,19 @@ export default function CheckDetailPage() {
             {formatDateTime(check.createdAt)}
           </p>
         </div>
-        <Button asChild variant="outline" size="sm">
-          <Link href="/history">View history</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {check.product ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/products/${check.product.id}/configure`}>
+                <Settings2 className="h-4 w-4" aria-hidden="true" />
+                Configure product
+              </Link>
+            </Button>
+          ) : null}
+          <Button asChild variant="outline" size="sm">
+            <Link href="/history">View history</Link>
+          </Button>
+        </div>
       </div>
 
       <CheckResults check={check} />

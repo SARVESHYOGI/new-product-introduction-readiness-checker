@@ -2,7 +2,7 @@
 
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, ClipboardCheck } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, Settings2 } from "lucide-react";
 import { useBoms, useHistory, useProduct, useRoutings } from "@/lib/client/queries";
 import { describeConfigurationGaps } from "@/lib/configuration";
 import { formatDateTime } from "@/lib/utils";
@@ -75,16 +75,24 @@ export default function ProductDetailPage() {
             </p>
           ) : null}
         </div>
-        <Button asChild size="sm" disabled={!isConfigured}>
-          <Link
-            href={isConfigured ? `/readiness?product=${p.id}` : "#"}
-            aria-disabled={!isConfigured}
-            tabIndex={isConfigured ? undefined : -1}
-          >
-            <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
-            Run check
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/products/${p.id}/configure`}>
+              <Settings2 className="h-4 w-4" aria-hidden="true" />
+              Configure
+            </Link>
+          </Button>
+          <Button asChild size="sm" disabled={!isConfigured}>
+            <Link
+              href={isConfigured ? `/readiness?product=${p.id}` : "#"}
+              aria-disabled={!isConfigured}
+              tabIndex={isConfigured ? undefined : -1}
+            >
+              <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
+              Run check
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">

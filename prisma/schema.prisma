@@ -172,7 +172,12 @@ model Routing {
 
   readinessChecks ReadinessCheck[]
 
-  @@unique([productId, code])
+  // A product may have several versions of the same routing code: superseding a
+  // routing means creating a new version, not mutating the published one. The
+  // readiness engine — not a unique index — decides whether having more than one
+  // ACTIVE routing is a conflict (Safety Rule 3), so the schema must be able to
+  // represent that state for the engine to report on.
+  @@index([productId, code])
   @@index([productId, status])
 }
 
@@ -275,7 +280,13 @@ model IdentifierRange {
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  @@unique([productId, prefix])
+  // Real serial allocation hands out a product several blocks over time (one
+  // active, the earlier ones archived as INACTIVE/EXHAUSTED). A unique
+  // (productId, prefix) index would forbid that, and would also make the
+  // overlapping-range integrity check unreachable, so the invariant is enforced
+  // by the readiness engine and reported as an advisory by the configuration
+  // service instead.
+  @@index([productId, prefix, status])
   @@index([productId, status])
 }
 
@@ -300,7 +311,11 @@ model ProductInventoryMapping {
   product       Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
-  @@unique([productId, mappingType])
+  // At most one *active* output mapping is required, but historical INACTIVE
+  // rows must be retained so a repointed product keeps its mapping history.
+  // A plain unique index could not express that, so the invariant lives in the
+  // configuration service (advisory) and the readiness engine (blocking).
+  @@index([productId, mappingType, status])
   @@index([inventoryItemId])
 }
 

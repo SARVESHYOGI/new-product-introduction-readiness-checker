@@ -164,3 +164,26 @@ export async function requiredParam(
   }
   return value;
 }
+
+/**
+ * Read an optional query parameter restricted to a fixed set of values.
+ *
+ * An unknown value is a 400 rather than being silently dropped or cast: a
+ * mistyped `?status=ACTVE` must not look like "no filter", because the editor
+ * would then show the engineer a different set of stations than they asked for.
+ */
+export function enumQueryParam<T extends string>(
+  req: Request,
+  key: string,
+  allowed: readonly T[]
+): T | undefined {
+  const value = new URL(req.url).searchParams.get(key);
+  if (value === null || value === "") return undefined;
+  if (!allowed.includes(value as T)) {
+    throw ApiError.badRequest(
+      "INVALID_QUERY_PARAM",
+      `'${key}' must be one of: ${allowed.join(", ")}.`
+    );
+  }
+  return value as T;
+}

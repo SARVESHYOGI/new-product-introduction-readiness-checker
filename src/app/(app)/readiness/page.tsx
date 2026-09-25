@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ClipboardCheck, LoaderCircle, CircleAlert } from "lucide-react";
+import Link from "next/link";
+import { ClipboardCheck, LoaderCircle, CircleAlert, Settings2 } from "lucide-react";
 import { useBoms, useLines, useProducts, useRoutings, useRunCheck, useMe } from "@/lib/client/queries";
 import { ApiClientError } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
@@ -329,6 +330,28 @@ export default function RunCheckPage() {
               ) : (
                 <div className="rounded-md border border-muted bg-muted/40 p-4 text-sm text-muted-foreground">
                   <p>Only engineers and administrators can run readiness checks.</p>
+                </div>
+              )}
+
+              {selectedProduct && !selectedProduct.configuration.isConfigured ? (
+                <div className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-primary/20 bg-primary/[0.03] p-3 text-sm">
+                  <p className="text-muted-foreground">
+                    Configure the missing product resources, then return here to run the check.
+                  </p>
+                  <Button asChild size="sm">
+                    <Link href={`/products/${selectedProduct.id}/configure`}>
+                      <Settings2 className="h-4 w-4" aria-hidden="true" />
+                      Configure product
+                    </Link>
+                  </Button>
+                </div>
+              ) : null}
+              {!hasNoLines ? null : (
+                <div className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-warning/30 bg-warning-soft p-3 text-sm text-warning">
+                  <p>No active production line is available.</p>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/configuration">Open configuration</Link>
+                  </Button>
                 </div>
               )}
 

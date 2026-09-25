@@ -10,6 +10,7 @@ import {
   LogOut,
   LayoutDashboard,
   LoaderCircle,
+  Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLogout, useMe } from "@/lib/client/queries";
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/readiness", label: "Run Check", icon: ClipboardCheck, match: (p: string) => p.startsWith("/readiness") && p !== "/readiness/history" },
   { href: "/history", label: "History", icon: History, match: (p: string) => p.startsWith("/history") },
   { href: "/products", label: "Products", icon: Boxes, match: (p: string) => p.startsWith("/products") },
+  { href: "/configuration", label: "Configuration", icon: Settings2, match: (p: string) => p.startsWith("/configuration") },
 ];
 
 const roleVariant: Record<User["role"], "default" | "secondary" | "outline"> = {

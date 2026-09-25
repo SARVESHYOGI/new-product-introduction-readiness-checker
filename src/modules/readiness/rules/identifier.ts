@@ -81,6 +81,7 @@ export const identifierRule: ReadinessRule = {
     }
 
     if (active.length === 0) {
+      const allExhausted = ranges.every((r) => r.status === "EXHAUSTED");
       results.push(
         buildResult({
           ruleCode: "IDENTIFIER_RANGE_ACTIVE",
@@ -88,15 +89,27 @@ export const identifierRule: ReadinessRule = {
           status: "FAIL",
           ...HIGH_BLOCK,
           title: "No active identifier range",
-          message: "Identifier ranges exist but none are active.",
+          message: allExhausted
+            ? "Every identifier range for this product is exhausted, so no new serial can be issued."
+            : "Identifier ranges exist but none are active.",
           affectedEntityType: "Product",
           affectedEntityId: ctx.input.productId,
-          remediation: "Activate an identifier range for the product.",
+          remediation: allExhausted
+            ? "Create a new active identifier range for the product."
+            : "Activate an identifier range for the product.",
         })
       );
     }
 
-    for (const range of active) {
+    for (const range of ranges) {
+      // An anomaly in an active range is a production blocker: serials are
+      // handed out from it right now. The same anomaly in an archived range is
+      // a data-hygiene warning only — history cannot be rewritten, and an old
+      // block does not issue new serials.
+      const isActive = range.status === "ACTIVE";
+      const anomaly = isActive ? CRITICAL_BLOCK : WARN_LOW;
+      const rangeLabel = `${range.prefix} (${range.startNumber}-${range.endNumber}, ${range.status})`;
+
       if (isEmptyText(range.prefix)) {
         results.push(
           buildResult({
@@ -105,7 +118,7 @@ export const identifierRule: ReadinessRule = {
             status: "FAIL",
             ...HIGH_BLOCK,
             title: "Identifier range has no prefix",
-            message: "The active identifier range has an empty prefix.",
+            message: "An identifier range has an empty prefix.",
             affectedEntityType: "IdentifierRange",
             affectedEntityId: range.id,
             remediation: "Set a prefix for the identifier range.",
@@ -119,9 +132,9 @@ export const identifierRule: ReadinessRule = {
             ruleCode: "IDENTIFIER_RANGE_BOUNDS",
             category: CATEGORY,
             status: "FAIL",
-            ...CRITICAL_BLOCK,
+            ...anomaly,
             title: "Invalid identifier range bounds",
-            message: `Range ${range.prefix} has start (${range.startNumber}) >= end (${range.endNumber}).`,
+            message: `Range ${rangeLabel} has start (${range.startNumber}) >= end (${range.endNumber}).`,
             affectedEntityType: "IdentifierRange",
             affectedEntityId: range.id,
             remediation: "Set start number strictly below end number.",
@@ -135,15 +148,15 @@ export const identifierRule: ReadinessRule = {
             ruleCode: "IDENTIFIER_CURRENT_IN_RANGE",
             category: CATEGORY,
             status: "FAIL",
-            ...CRITICAL_BLOCK,
+            ...anomaly,
             title: "Identifier counter is out of range",
-            message: `Range ${range.prefix} current number ${range.currentNumber} is outside ${range.startNumber}-${range.endNumber}.`,
+            message: `Range ${rangeLabel} current number ${range.currentNumber} is outside ${range.startNumber}-${range.endNumber}.`,
             affectedEntityType: "IdentifierRange",
             affectedEntityId: range.id,
             remediation: "Reset the counter to a value inside the configured range.",
           })
         );
-      } else if (range.currentNumber >= range.endNumber) {
+      } else if (isActive && range.currentNumber >= range.endNumber) {
         results.push(
           buildResult({
             ruleCode: "IDENTIFIER_CURRENT_IN_RANGE",
@@ -151,7 +164,7 @@ export const identifierRule: ReadinessRule = {
             status: "WARNING",
             ...WARN_LOW,
             title: "Identifier range is nearly exhausted",
-            message: `Range ${range.prefix} has reached its configured end (${range.currentNumber}/${range.endNumber}).`,
+            message: `Range ${rangeLabel} has reached its configured end (${range.currentNumber}/${range.endNumber}).`,
             affectedEntityType: "IdentifierRange",
             affectedEntityId: range.id,
             remediation: "Prepare an additional identifier range before the current one is consumed.",
@@ -161,6 +174,7 @@ export const identifierRule: ReadinessRule = {
     }
 
     if (results.length === 0) {
+      const primary = active[0];
       results.push(
         buildResult({
           ruleCode: "IDENTIFIER_RANGE_OK",
@@ -168,7 +182,7 @@ export const identifierRule: ReadinessRule = {
           status: "PASS",
           ...PASS_INFO,
           title: "Identifier range is valid",
-          message: `Range ${active[0]?.prefix ?? ""} is active and within bounds.`,
+          message: `Range ${primary?.prefix ?? ""} is active and within bounds.`,
         })
       );
     }

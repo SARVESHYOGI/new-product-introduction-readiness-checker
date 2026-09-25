@@ -5,11 +5,11 @@ import type {
 } from "../types";
 import {
   buildResult,
+  CRITICAL_BLOCK,
   HIGH_BLOCK,
   isEmptyText,
   PASS_INFO,
   WARN_LOW,
-  WARN_MEDIUM,
 } from "./helpers";
 
 const CATEGORY = "Work Instructions";
@@ -23,6 +23,10 @@ const CATEGORY = "Work Instructions";
  *  3. Correct operation mapping (enforced by FK; instructions are loaded per operation)
  *  4. Required instructions are not empty
  *  5. Only the active version is used (and exactly one active version exists)
+ *
+ * An instruction marked `required: false` cannot satisfy a required operation,
+ * and two simultaneously active versions are a blocking integrity conflict
+ * (Safety S3) rather than a warning.
  *
  * Non-blocking note: when the routing cannot be assessed (missing routing),
  * this rule emits a WARNING instead of silently passing.
@@ -104,15 +108,21 @@ export const workInstructionRule: ReadinessRule = {
         continue;
       }
 
+      // Safety S3 — two published versions of the same instruction means the
+      // line floor could be following either one, so the configuration is
+      // ambiguous rather than merely untidy. Blocking.
       if (active.length > 1) {
+        allValid = false;
         results.push(
           buildResult({
             ruleCode: "WORK_INSTRUCTION_MULTIPLE_ACTIVE",
             category: CATEGORY,
-            status: "WARNING",
-            ...WARN_MEDIUM,
+            status: "FAIL",
+            ...CRITICAL_BLOCK,
             title: "Multiple active work instruction versions",
-            message: `Operation ${op.operationName} has ${active.length} active work instruction versions.`,
+            message: `Operation ${op.operationName} has ${active.length} active work instruction versions (${active
+              .map((w) => `v${w.version}`)
+              .join(", ")}). Operators cannot be trained against an ambiguous instruction.`,
             affectedEntityType: "RoutingOperation",
             affectedEntityId: op.id,
             remediation: "Keep exactly one active version per work instruction.",
@@ -120,7 +130,29 @@ export const workInstructionRule: ReadinessRule = {
         );
       }
 
-      for (const wi of active) {
+      // An instruction explicitly marked as not required cannot satisfy a
+      // required operation, otherwise flipping the flag would silently switch a
+      // safety-relevant step off.
+      const requiredActive = active.filter((wi) => wi.required);
+      if (active.length > 0 && requiredActive.length === 0) {
+        allValid = false;
+        results.push(
+          buildResult({
+            ruleCode: "WORK_INSTRUCTION_EXISTS",
+            category: CATEGORY,
+            status: "FAIL",
+            ...HIGH_BLOCK,
+            title: "Work instruction missing",
+            message: `Required operation ${op.operationName} only has work instruction(s) marked as not required.`,
+            affectedEntityType: "RoutingOperation",
+            affectedEntityId: op.id,
+            remediation: `Mark an active work instruction for ${op.operationName} as required.`,
+          })
+        );
+        continue;
+      }
+
+      for (const wi of requiredActive) {
         if (isEmptyText(wi.content)) {
           allValid = false;
           results.push(

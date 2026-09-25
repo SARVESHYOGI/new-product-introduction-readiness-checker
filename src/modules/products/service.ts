@@ -1,4 +1,5 @@
 import type {
+  Prisma,
   PrismaClient,
   Product,
   ProductStatus,
@@ -6,7 +7,9 @@ import type {
 } from "@/generated/prisma/client";
 import { prisma as defaultClient } from "@/lib/db/prisma";
 import { ApiError } from "@/lib/errors";
-import type { ProductCreateInput } from "@/lib/validation/schemas";
+import { withMappedErrors } from "@/lib/db/errors";
+import { recordAudit } from "@/lib/audit";
+import type { ProductCreateInput, ProductUpdateInput } from "@/lib/validation/schemas";
 
 /**
  * Configuration pieces a product needs before a readiness check can even be
@@ -132,32 +135,125 @@ export class ProductService {
   }
 
   async create(input: ProductCreateInput, actorId: string): Promise<Product> {
-    return this.client.$transaction(async (tx) => {
-      const existing = await tx.product.findUnique({ where: { sku: input.sku } });
-      if (existing) {
-        throw ApiError.badRequest(
-          "DUPLICATE_SKU",
-          `A product with SKU ${input.sku} already exists.`
-        );
-      }
-      const product = await tx.product.create({
-        data: {
-          sku: input.sku,
-          name: input.name,
-          description: input.description,
-          status: input.status,
-        },
-      });
-      await tx.auditLog.create({
-        data: {
+    return withMappedErrors("product", () =>
+      this.client.$transaction(async (tx) => {
+        const existing = await tx.product.findUnique({ where: { sku: input.sku } });
+        if (existing) {
+          throw ApiError.badRequest(
+            "DUPLICATE_SKU",
+            `A product with SKU ${input.sku} already exists.`
+          );
+        }
+        const product = await tx.product.create({
+          data: {
+            sku: input.sku,
+            name: input.name,
+            description: input.description,
+            status: input.status,
+          },
+        });
+        await recordAudit(tx, {
           actorId,
           action: "product.create",
           entityType: "Product",
           entityId: product.id,
-          metadata: { sku: product.sku },
-        },
-      });
-      return product;
-    });
+          metadata: { sku: product.sku, status: product.status },
+        });
+        return product;
+      })
+    );
+  }
+
+  /**
+   * SKU is intentionally immutable: it is the natural key that BOM components,
+   * inventory items, and identifier prefixes are matched against. Renaming it
+   * would silently invalidate those relationships, so the editor only exposes
+   * name, description, and status.
+   */
+  async update(id: string, input: ProductUpdateInput, actorId: string): Promise<Product> {
+    return withMappedErrors("product", () =>
+      this.client.$transaction(async (tx: Prisma.TransactionClient) => {
+        const existing = await tx.product.findUnique({ where: { id } });
+        if (!existing) {
+          throw ApiError.notFound("NOT_FOUND", `Product ${id} was not found.`);
+        }
+        const product = await tx.product.update({
+          where: { id },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.description !== undefined ? { description: input.description } : {}),
+            ...(input.status !== undefined ? { status: input.status } : {}),
+          },
+        });
+        await recordAudit(tx, {
+          actorId,
+          action: "product.update",
+          entityType: "Product",
+          entityId: product.id,
+          metadata: {
+            from: { name: existing.name, status: existing.status },
+            to: input,
+          },
+        });
+        return product;
+      })
+    );
+  }
+
+  /**
+   * A product can only be deleted while it is still a draft with no dependent
+   * configuration and no readiness history. Once a check has run against it,
+   * `ReadinessCheck` uses `onDelete: Restrict`, so deletion is impossible by
+   * design — set it to INACTIVE instead so the immutable history stays readable.
+   */
+  async delete(id: string, actorId: string): Promise<void> {
+    return withMappedErrors("product", () =>
+      this.client.$transaction(async (tx) => {
+        const existing = await tx.product.findUnique({
+          where: { id },
+          include: {
+            _count: {
+              select: {
+                readinessChecks: true,
+                bomVersions: true,
+                routings: true,
+                identifierRanges: true,
+                inventoryMappings: true,
+              },
+            },
+          },
+        });
+        if (!existing) {
+          throw ApiError.notFound("NOT_FOUND", `Product ${id} was not found.`);
+        }
+
+        const { readinessChecks, bomVersions, routings, identifierRanges, inventoryMappings } =
+          existing._count;
+        const blockers: string[] = [];
+        if (readinessChecks > 0) {
+          blockers.push(`${readinessChecks} readiness check(s)`);
+        }
+        if (bomVersions > 0) blockers.push(`${bomVersions} BOM version(s)`);
+        if (routings > 0) blockers.push(`${routings} routing(s)`);
+        if (identifierRanges > 0) blockers.push(`${identifierRanges} identifier range(s)`);
+        if (inventoryMappings > 0) blockers.push(`${inventoryMappings} inventory mapping(s)`);
+
+        if (blockers.length > 0) {
+          throw ApiError.conflict(
+            "PRODUCT_HAS_DEPENDENTS",
+            `${existing.name} cannot be deleted because it still has ${blockers.join(", ")}. Remove the dependent configuration first, or set the product to INACTIVE to keep its readiness history.`
+          );
+        }
+
+        await tx.product.delete({ where: { id } });
+        await recordAudit(tx, {
+          actorId,
+          action: "product.delete",
+          entityType: "Product",
+          entityId: id,
+          metadata: { sku: existing.sku, name: existing.name },
+        });
+      })
+    );
   }
 }

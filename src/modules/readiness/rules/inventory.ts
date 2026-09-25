@@ -50,8 +50,9 @@ export const inventoryRule: ReadinessRule = {
       return results;
     }
 
-    // Defensive: the (productId, mappingType) unique constraint allows at most
-    // one row per product; this checks ACTIVE duplicates explicitly.
+    // Exactly one ACTIVE output mapping is required. Historical INACTIVE rows
+    // are legitimate — a product may be repointed at a new finished goods SKU —
+    // so only the active set decides readiness.
     const activeMappings = mappings.filter((m) => m.status === "ACTIVE");
     if (activeMappings.length > 1) {
       results.push(
@@ -61,7 +62,7 @@ export const inventoryRule: ReadinessRule = {
           status: "FAIL",
           ...CRITICAL_BLOCK,
           title: "Multiple active output mappings",
-          message: `Product has ${activeMappings.length} active output inventory mappings. Exactly one is allowed.`,
+          message: `Product has ${activeMappings.length} active output inventory mappings. Exactly one is allowed, otherwise finished goods land in an ambiguous stock location.`,
           affectedEntityType: "Product",
           affectedEntityId: ctx.input.productId,
           remediation: "Deactivate all but one output inventory mapping.",
@@ -69,27 +70,8 @@ export const inventoryRule: ReadinessRule = {
       );
     }
 
-    if (mappings.length > 1) {
-      // Distinct rows (e.g. no longer unique mappingType) — treat as ambiguous.
-      results.push(
-        buildResult({
-          ruleCode: "INVENTORY_SINGLE_ACTIVE",
-          category: CATEGORY,
-          status: "FAIL",
-          ...CRITICAL_BLOCK,
-          title: "Multiple output inventory mappings",
-          message: `Product has ${mappings.length} output inventory mapping rows. Exactly one is expected.`,
-          affectedEntityType: "Product",
-          affectedEntityId: ctx.input.productId,
-          remediation: "Consolidate to a single output inventory mapping.",
-        })
-      );
-    }
-
-    const mapping = mappings[0];
-    if (!mapping) return results;
-
-    if (mapping.status !== "ACTIVE") {
+    const mapping = activeMappings[0];
+    if (!mapping) {
       results.push(
         buildResult({
           ruleCode: "INVENTORY_MAPPING_ACTIVE",
@@ -97,12 +79,13 @@ export const inventoryRule: ReadinessRule = {
           status: "FAIL",
           ...HIGH_BLOCK,
           title: "Output mapping is not active",
-          message: "The output inventory mapping is not active.",
-          affectedEntityType: "ProductInventoryMapping",
-          affectedEntityId: mapping.id,
+          message: "The product has no active output inventory mapping.",
+          affectedEntityType: "Product",
+          affectedEntityId: ctx.input.productId,
           remediation: "Activate the output inventory mapping.",
         })
       );
+      return results;
     }
 
     if (!mapping.inventoryItem) {

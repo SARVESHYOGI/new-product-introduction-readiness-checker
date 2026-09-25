@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Search, Boxes, Plus } from "lucide-react";
+import { Search, Boxes, Plus, Settings2 } from "lucide-react";
 import { useMe, useProducts } from "@/lib/client/queries";
 import { describeConfigurationGaps } from "@/lib/configuration";
 import { AddProductDialog } from "@/components/products/add-product-dialog";
@@ -134,18 +134,26 @@ export default function ProductsPage() {
                     <span className="text-xs text-muted-foreground">No check possible yet</span>
                   )}
                 </div>
-                <Button asChild variant="outline" size="sm" className="w-full">
-                  <Link
-                    href={
-                      product.configuration.isConfigured && product.lastCheckStatus
-                        ? `/readiness?product=${product.id}`
-                        : `/products/${product.id}`
-                    }
-                  >
-                    <Boxes className="h-4 w-4" aria-hidden="true" />
-                    View details
-                  </Link>
-                </Button>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button asChild variant="outline" size="sm">
+                    <Link
+                      href={
+                        product.configuration.isConfigured && product.lastCheckStatus
+                          ? `/readiness?product=${product.id}`
+                          : `/products/${product.id}`
+                      }
+                    >
+                      <Boxes className="h-4 w-4" aria-hidden="true" />
+                      View details
+                    </Link>
+                  </Button>
+                  <Button asChild variant="outline" size="sm">
+                    <Link href={`/products/${product.id}/configure`}>
+                      <Settings2 className="h-4 w-4" aria-hidden="true" />
+                      Configure
+                    </Link>
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
