@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Search, Boxes, Plus } from "lucide-react";
 import { useMe, useProducts } from "@/lib/client/queries";
+import { describeConfigurationGaps } from "@/lib/configuration";
 import { AddProductDialog } from "@/components/products/add-product-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -73,12 +74,28 @@ export default function ProductsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {products.map((product) => (
-            <Card key={product.id} className="transition-shadow hover:shadow-md">
+            <Card
+              key={product.id}
+              data-testid={`product-card-${product.id}`}
+              className="transition-shadow hover:shadow-md"
+            >
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-2">
-                  <Badge variant={productStatusVariant[product.status]}>
-                    {product.status}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge variant={productStatusVariant[product.status]}>
+                      {product.status}
+                    </Badge>
+                    <Badge
+                      variant={product.configuration.isConfigured ? "success" : "warning"}
+                      title={
+                        product.configuration.isConfigured
+                          ? "This product has a BOM version and a routing."
+                          : `Missing: ${product.configuration.missing.join(", ")}`
+                      }
+                    >
+                      {product.configuration.isConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+                    </Badge>
+                  </div>
                   <span className="font-mono text-xs text-muted-foreground">{product.sku}</span>
                 </div>
                 <CardTitle className="mt-2">
@@ -96,6 +113,12 @@ export default function ProductsPage() {
                   <span>{product._count.routings} routings</span>
                   <span>{product._count.readinessChecks} checks</span>
                 </div>
+                {!product.configuration.isConfigured ? (
+                  <p className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning">
+                    Cannot be checked — missing{" "}
+                    {describeConfigurationGaps(product.configuration.missing)}.
+                  </p>
+                ) : null}
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Latest check
@@ -105,12 +128,20 @@ export default function ProductsPage() {
                       <span className="text-sm font-medium tabular-nums">{product.lastCheckScore}%</span>
                       <StatusBadge status={product.lastCheckStatus} />
                     </div>
-                  ) : (
+                  ) : product.configuration.isConfigured ? (
                     <span className="text-xs text-muted-foreground">Never checked</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">No check possible yet</span>
                   )}
                 </div>
                 <Button asChild variant="outline" size="sm" className="w-full">
-                  <Link href={product.lastCheckStatus ? `/readiness?product=${product.id}` : `/products/${product.id}`}>
+                  <Link
+                    href={
+                      product.configuration.isConfigured && product.lastCheckStatus
+                        ? `/readiness?product=${product.id}`
+                        : `/products/${product.id}`
+                    }
+                  >
                     <Boxes className="h-4 w-4" aria-hidden="true" />
                     View details
                   </Link>

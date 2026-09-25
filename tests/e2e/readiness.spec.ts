@@ -8,8 +8,28 @@
  * demo account so server-side role checks are exercised for real.
  */
 import { expect, test, type Page } from "@playwright/test";
+import "dotenv/config";
+import { Client } from "pg";
 
 const ENGINEER = { email: "engineer@npi.local", password: "engineer123" };
+
+/**
+ * The admin flow below creates a real product (this app deliberately exposes no
+ * DELETE endpoint). Remove those rows afterwards so repeated E2E runs do not
+ * litter the seeded demo catalog with DRAFT products.
+ *
+ * Uses the `pg` driver directly rather than the generated Prisma client: the
+ * generated client is ESM-only and Playwright transpiles specs to CommonJS.
+ */
+test.afterAll(async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query(`DELETE FROM "Product" WHERE "sku" LIKE 'E2E-%'`);
+  } finally {
+    await client.end();
+  }
+});
 
 // prod_002 ("Smart Watch X Lite") is seeded to be NOT_READY at 71% because its
 // work instructions are missing — the ideal target for the blocker/remediation
@@ -118,6 +138,43 @@ test("engineer runs a readiness check and views blocker remediation", async ({ p
 test("unauthenticated users cannot reach protected pages", async ({ page }) => {
   await page.goto("/history");
   await expect(page).toHaveURL(/\/login/);
+});
+
+test("an unconfigured product is visibly NOT CONFIGURED and cannot be checked", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  await page.goto("/login");
+  await signIn(page);
+
+  // The catalog distinguishes "the product exists" from "the product can be
+  // checked". prod_006 (PlayStation 5) is seeded with no BOM and no routing.
+  await page.goto("/products");
+  const ps5Card = page.getByTestId("product-card-prod_006");
+  await expect(ps5Card.getByText("NOT CONFIGURED")).toBeVisible();
+  await expect(ps5Card.getByText(/Cannot be checked — missing/)).toBeVisible();
+  // It must never be presented as ready or as having a passing score.
+  await expect(ps5Card.getByText("No check possible yet")).toBeVisible();
+  await expect(ps5Card.getByText("READY")).toHaveCount(0);
+
+  // Its detail page states the gap and refuses to offer a run.
+  await ps5Card.getByRole("link", { name: "PlayStation 5" }).click();
+  await page.waitForURL(/\/products\/prod_006$/);
+  await expect(page.getByText(/is missing a BOM version and a routing/)).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Run check", exact: true })
+  ).toHaveAttribute("aria-disabled", "true");
+
+  // On the run-check page the selectors for the unconfigured product are
+  // empty and the run button stays disabled with an explanation.
+  await page.goto("/readiness?product=prod_006");
+  await expect(page.getByRole("heading", { name: "Run Readiness Check" })).toBeVisible();
+  await expect(page.getByText("is not fully configured")).toBeVisible();
+  await expect(page.getByText(/No BOM versions exist for PlayStation 5/)).toBeVisible();
+  await expect(page.getByText(/No routings exist for PlayStation 5/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run Readiness Check" })).toBeDisabled();
+  await expect(
+    page.getByText("This product has no BOM version. Configure a BOM version before running a check.")
+  ).toBeVisible();
 });
 
 test("admins can create a product; engineers cannot", async ({ page }) => {

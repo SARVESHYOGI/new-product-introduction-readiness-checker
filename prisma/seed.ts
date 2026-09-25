@@ -1,17 +1,21 @@
 /**
  * NPI Readiness Checker — demo seed.
  *
- * Populates a complete demo environment with 5 deliberate readiness scenarios:
+ * Populates a complete demo environment with 5 deliberate readiness scenarios
+ * plus one deliberately unconfigured product:
  *
  *  Product 1  Smart Watch X1        READY      100%   everything valid
  *  Product 2  Smart Watch X Lite    NOT_READY   71%   missing work instruction + missing operator
  *  Product 3  Control Unit 2000     NOT_READY   86%   missing operator assignments
- *  Product 4  Display Module 4000   BLOCKED     ~57%  inactive station
- *  Product 5  Power Supply 5000     BLOCKED     ~71%  conflicting configuration (2 active BOMs + overlapping ranges)
+ *  Product 4  Display Module 4000   BLOCKED      57%  inactive station
+ *  Product 5  Power Supply 5000     BLOCKED      71%  conflicting configuration (2 active BOMs + overlapping ranges)
+ *  Product 6  PlayStation 5         (no check)         unconfigured: no BOM version, no routing
  *
  * After creating the configuration, it runs the real readiness engine once per
- * product and persists the immutable checks, so the dashboard and history are
- * populated with authentic results produced by the same code path as live runs.
+ * configured product and persists the immutable checks, so the dashboard and
+ * history are populated with authentic results produced by the same code path as
+ * live runs. Product 6 is asserted to have produced no check at all — an
+ * unconfigured product can never be reported ready.
  *
  * Run with: npm run db:seed
  */
@@ -28,6 +32,12 @@ import { logger } from "../src/lib/logging/logger";
 const client = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }),
 });
+
+/**
+ * Seeded product that exists in the catalog but is deliberately not configured
+ * (no BOM version, no routing). Exported so tests assert the same invariant.
+ */
+const UNCONFIGURED_PRODUCT_ID = "prod_006";
 
 async function wipe(): Promise<void> {
   await client.readinessResult.deleteMany();
@@ -136,6 +146,12 @@ async function seedCore(): Promise<void> {
     { id: "prod_003", sku: "CTU-2000", name: "Control Unit 2000", description: "Industrial control unit.", status: "ACTIVE" as const },
     { id: "prod_004", sku: "DPL-4000", name: "Display Module 4000", description: "Automotive display module.", status: "ACTIVE" as const },
     { id: "prod_005", sku: "PS-5000", name: "Power Supply 5000", description: "Switching power supply.", status: "ACTIVE" as const },
+    // Deliberately UNCONFIGURED: exists in the catalog but has no BOM version,
+    // no routing, no identifier range and no output inventory mapping. It
+    // demonstrates that "the product exists" is not the same as "the product
+    // is ready" — no readiness check can even be requested for it, so it can
+    // never be reported READY.
+    { id: "prod_006", sku: "PS5", name: "PlayStation 5", description: "Unconfigured product — no BOM version and no routing.", status: "ACTIVE" as const },
   ];
   await client.product.createMany({ data: products });
 
@@ -374,6 +390,28 @@ async function seedReadinessHistory(): Promise<void> {
   if (failures > 0) {
     throw new Error(`${failures} seeded readiness scenario(s) did not match the expected outcome.`);
   }
+
+  // prod_006 ("PlayStation 5") is seeded unconfigured on purpose. Assert the
+  // fail-safe behaviour: it has no BOM/routing, so the service layer refuses to
+  // run a check for it and no readiness result of any kind exists. It must
+  // never carry a READY status.
+  const [unconfiguredBoms, unconfiguredRoutings, unconfiguredChecks] = await Promise.all([
+    client.bOMVersion.count({ where: { productId: UNCONFIGURED_PRODUCT_ID } }),
+    client.routing.count({ where: { productId: UNCONFIGURED_PRODUCT_ID } }),
+    client.readinessCheck.count({ where: { productId: UNCONFIGURED_PRODUCT_ID } }),
+  ]);
+  if (unconfiguredBoms > 0 || unconfiguredRoutings > 0 || unconfiguredChecks > 0) {
+    throw new Error(
+      `Unconfigured product ${UNCONFIGURED_PRODUCT_ID} must have no BOM, no routing and no readiness checks ` +
+        `(found ${unconfiguredBoms} BOMs, ${unconfiguredRoutings} routings, ${unconfiguredChecks} checks).`
+    );
+  }
+  logger.info("seed_unconfigured_product_verified", {
+    productId: UNCONFIGURED_PRODUCT_ID,
+    bomVersions: unconfiguredBoms,
+    routings: unconfiguredRoutings,
+    readinessChecks: unconfiguredChecks,
+  });
 }
 
 async function main(): Promise<void> {
@@ -411,4 +449,4 @@ if (isMain) {
     });
 }
 
-export { client, seedCore, seedReadinessHistory, wipe };
+export { client, seedCore, seedReadinessHistory, wipe, UNCONFIGURED_PRODUCT_ID };

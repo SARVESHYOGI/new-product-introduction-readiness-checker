@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import type { ConfigurationGap } from "@/lib/client/types";
+import { describeConfigurationGaps } from "@/lib/configuration";
 
 const PHASES = [
   "Validating BOM…",
@@ -47,7 +49,42 @@ export default function RunCheckPage() {
   const selectedRouting = routings.data?.find((r) => r.id === routingId);
   const selectedLine = lines.data?.find((l) => l.id === lineId);
 
+  // A product that exists in the catalog is not necessarily checkable: the
+  // configuration status is derived server-side (see ProductService) and is
+  // used to explain *why* the run button is disabled.
+  const gaps: ConfigurationGap[] = selectedProduct?.configuration.missing ?? [];
+  const bomsResolved = !productId || boms.isLoading || Boolean(boms.data);
+  const routingsResolved = !productId || routings.isLoading || Boolean(routings.data);
+  const linesResolved = lines.isLoading || Boolean(lines.data);
+
+  // A product with no BOM / no routing can never produce a readiness decision,
+  // so the run button stays disabled rather than sending a request the API
+  // would (correctly) reject.
+  const hasNoBom = productId && bomsResolved && boms.data?.length === 0;
+  const hasNoRouting = productId && routingsResolved && routings.data?.length === 0;
+  const hasNoLines = linesResolved && lines.data?.length === 0;
+
   const canRun = Boolean(productId && bomVersionId && routingId && lineId) && !runCheck.isPending;
+
+  // Explains the disabled button. Ordered most-specific first.
+  const blockedReason = !productId
+    ? "Select a product to begin."
+    : hasNoBom
+      ? "This product has no BOM version. Configure a BOM version before running a check."
+      : hasNoRouting
+        ? "This product has no routing. Configure a routing before running a check."
+        : hasNoLines
+          ? "No production lines exist. Configure a production line before running a check."
+          : gaps.length > 0
+            ? `${selectedProduct!.name} is missing ${describeConfigurationGaps(gaps)} and cannot be checked.`
+            : !bomVersionId && gaps.length === 0
+              ? "Select a BOM version."
+              : !routingId && gaps.length === 0
+                ? "Select a routing."
+                : !lineId
+                  ? "Select a production line."
+                  : null;
+
   const isLoadingOptions =
     products.isLoading || boms.isLoading || routings.isLoading || lines.isLoading;
 
@@ -149,6 +186,21 @@ export default function RunCheckPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {selectedProduct && !selectedProduct.configuration.isConfigured ? (
+                    <p
+                      role="status"
+                      className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger"
+                    >
+                      <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>
+                        {selectedProduct.name} is not fully configured — it is missing{" "}
+                        {describeConfigurationGaps(
+                          selectedProduct.configuration.missing
+                        )}
+                        , so it cannot be checked for production readiness.
+                      </span>
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -177,6 +229,12 @@ export default function RunCheckPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {hasNoBom ? (
+                    <p className="text-sm text-danger">
+                      No BOM versions exist for {selectedProduct?.name}. Create a BOM version
+                      before running a readiness check.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -205,6 +263,12 @@ export default function RunCheckPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {hasNoRouting ? (
+                    <p className="text-sm text-danger">
+                      No routings exist for {selectedProduct?.name}. Create a routing before
+                      running a readiness check.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -221,6 +285,11 @@ export default function RunCheckPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {hasNoLines ? (
+                    <p className="text-sm text-danger">
+                      No production lines are configured. A readiness check cannot run without one.
+                    </p>
+                  ) : null}
                 </div>
 
                 {runError ? (
@@ -236,7 +305,19 @@ export default function RunCheckPage() {
                   </div>
                 ) : null}
 
-                <Button type="submit" size="lg" disabled={!canRun} className="w-full sm:w-auto">
+                {blockedReason ? (
+                  <p id="run-readiness-hint" className="text-sm text-muted-foreground">
+                    {blockedReason}
+                  </p>
+                ) : null}
+
+                <Button
+                  type="submit"
+                  size="lg"
+                  disabled={!canRun}
+                  aria-describedby={blockedReason ? "run-readiness-hint" : undefined}
+                  className="w-full sm:w-auto"
+                >
                   {runCheck.isPending ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : (
@@ -290,9 +371,19 @@ export default function RunCheckPage() {
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Product</p>
                 {selectedProduct ? (
-                  <p className="mt-1 font-medium">
-                    {selectedProduct.name} <span className="font-mono text-muted-foreground">{selectedProduct.sku}</span>
-                  </p>
+                  <>
+                    <p className="mt-1 font-medium">
+                      {selectedProduct.name} <span className="font-mono text-muted-foreground">{selectedProduct.sku}</span>
+                    </p>
+                    <Badge
+                      variant={selectedProduct.configuration.isConfigured ? "success" : "warning"}
+                      className="mt-1"
+                    >
+                      {selectedProduct.configuration.isConfigured
+                        ? "CONFIGURED"
+                        : "NOT CONFIGURED"}
+                    </Badge>
+                  </>
                 ) : (
                   <p className="mt-1 text-muted-foreground">—</p>
                 )}
@@ -334,13 +425,6 @@ export default function RunCheckPage() {
           </Card>
         </div>
       )}
-
-      {productId && !boms.isLoading && boms.data && boms.data.length === 0 ? (
-        <EmptyState
-          title="No BOM versions for this product"
-          description="This product has no BOM versions. Configure a BOM before running a check."
-        />
-      ) : null}
     </div>
   );
 }

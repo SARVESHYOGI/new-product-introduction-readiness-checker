@@ -15,6 +15,17 @@ export interface User {
   role: UserRole;
 }
 
+/** Configuration pieces a product needs before a check can be requested. */
+export type ConfigurationGap = "BOM" | "ROUTING";
+
+export interface ProductConfiguration {
+  hasBom: boolean;
+  hasRouting: boolean;
+  /** A product can exist in the catalog and still be unconfigured. */
+  isConfigured: boolean;
+  missing: ConfigurationGap[];
+}
+
 export interface ProductListItem {
   id: string;
   sku: string;
@@ -24,7 +35,8 @@ export interface ProductListItem {
   createdAt: string;
   updatedAt: string;
   _count: { bomVersions: number; routings: number; readinessChecks: number };
-  lastCheckStatus: string | null;
+  configuration: ProductConfiguration;
+  lastCheckStatus: ReadinessStatus | null;
   lastCheckScore: number | null;
 }
 

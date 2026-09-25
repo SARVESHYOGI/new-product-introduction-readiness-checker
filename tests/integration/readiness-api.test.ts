@@ -11,7 +11,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as runCheck } from "@/app/api/readiness/check/route";
 import { GET as getCheckRoute } from "@/app/api/readiness/[id]/route";
 import { ReadinessService } from "@/modules/readiness/service";
-import { seedCore, seedReadinessHistory, wipe } from "../../prisma/seed";
+import { ProductService } from "@/modules/products/service";
+import { seedCore, seedReadinessHistory, wipe, UNCONFIGURED_PRODUCT_ID } from "../../prisma/seed";
 import type { User } from "@/generated/prisma/client";
 
 // Session-boundary mock: keeps `next/headers`/cookie handling out of the tests
@@ -133,6 +134,104 @@ describe("POST /api/readiness/check (integration)", () => {
     const check = payload.data.check;
     expect(check.status).toBe("BLOCKED");
     expect(check.rootBlockers.some((b) => b.severity === "CRITICAL")).toBe(true);
+  });
+
+  it("returns NOT_READY 86% for prod_003 (missing operator assignments)", async () => {
+    const res = await call({
+      productId: "prod_003",
+      bomVersionId: "bom_103",
+      routingId: "route_103",
+      lineId: "line_02",
+    });
+
+    expect(res.status).toBe(201);
+    const payload = (await res.json()) as {
+      data: { check: { status: string; score: number; categoryStatuses: Record<string, string> } };
+    };
+    const check = payload.data.check;
+    expect(check.status).toBe("NOT_READY");
+    expect(check.score).toBe(86);
+    // Only the Operators category fails; a high score must not imply READY.
+    expect(check.categoryStatuses.Operators).toBe("FAIL");
+  });
+
+  it("returns BLOCKED 71% for prod_005 (conflicting configuration)", async () => {
+    const res = await call({
+      productId: "prod_005",
+      bomVersionId: "bom_105",
+      routingId: "route_105",
+      lineId: "line_03",
+    });
+
+    expect(res.status).toBe(201);
+    const payload = (await res.json()) as {
+      data: { check: { status: string; score: number; categoryStatuses: Record<string, string> } };
+    };
+    const check = payload.data.check;
+    expect(check.status).toBe("BLOCKED");
+    expect(check.score).toBe(71);
+    // Safety S3: duplicate active BOM and overlapping identifier ranges.
+    expect(check.categoryStatuses.BOM).toBe("FAIL");
+    expect(check.categoryStatuses["Identifier Range"]).toBe("FAIL");
+  });
+
+  it("refuses to check an unconfigured product (no BOM / no routing) and never returns READY", async () => {
+    // prod_006 has neither a BOM version nor a routing, so there is nothing to
+    // validate. Borrowing prod_001's configuration must be rejected as a
+    // mismatch rather than silently scored as ready.
+    const borrowedConfiguration = await call({
+      productId: UNCONFIGURED_PRODUCT_ID,
+      bomVersionId: "bom_101",
+      routingId: "route_101",
+      lineId: "line_01",
+    });
+    expect(borrowedConfiguration.status).toBe(400);
+    const borrowedBody = (await borrowedConfiguration.json()) as {
+      error: { code: string };
+    };
+    expect(borrowedBody.error.code).toBe("MISMATCHED_CONFIGURATION");
+
+    // A non-existent BOM is rejected up front — no check is ever created.
+    const missingBom = await call({
+      productId: UNCONFIGURED_PRODUCT_ID,
+      bomVersionId: "bom_does_not_exist",
+      routingId: "route_101",
+      lineId: "line_01",
+    });
+    expect(missingBom.status).toBe(400);
+    const missingBomBody = (await missingBom.json()) as { error: { code: string } };
+    expect(missingBomBody.error.code).toBe("INVALID_BOM");
+
+    // No readiness result of any kind was persisted for the unconfigured product.
+    const service = new ReadinessService();
+    const history = await service.getHistory(UNCONFIGURED_PRODUCT_ID, 10);
+    expect(history).toHaveLength(0);
+    expect(history.some((h) => h.status === "READY")).toBe(false);
+  });
+
+  it("reports prod_006 as NOT CONFIGURED through the product service", async () => {
+    const service = new ProductService();
+    const unconfigured = await service.getById(UNCONFIGURED_PRODUCT_ID);
+
+    expect(unconfigured).not.toBeNull();
+    expect(unconfigured!.configuration.isConfigured).toBe(false);
+    expect(unconfigured!.configuration.missing).toEqual(["BOM", "ROUTING"]);
+    expect(unconfigured!.lastCheckStatus).toBeNull();
+    expect(unconfigured!.lastCheckScore).toBeNull();
+
+    // A fully configured product reports no gaps and the same shape as the
+    // catalog list (so the client can share one type).
+    const configured = await service.getById("prod_001");
+    expect(configured!.configuration.isConfigured).toBe(true);
+    expect(configured!.configuration.missing).toEqual([]);
+    expect(configured!.lastCheckStatus).toBe("READY");
+    expect(configured!.lastCheckScore).toBe(100);
+
+    const listed = await service.list();
+    const listedConfigured = listed.find((p) => p.id === "prod_001");
+    const listedUnconfigured = listed.find((p) => p.id === UNCONFIGURED_PRODUCT_ID);
+    expect(listedConfigured?.configuration).toEqual(configured!.configuration);
+    expect(listedUnconfigured?.configuration.isConfigured).toBe(false);
   });
 
   it("rejects mismatched configuration with 400 (IDs that do not belong together)", async () => {

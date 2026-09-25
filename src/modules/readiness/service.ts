@@ -5,8 +5,13 @@ import { logger } from "@/lib/logging/logger";
 import type { AuthUser } from "@/lib/auth/guard";
 import { parseOrThrow, readinessCheckInputSchema } from "@/lib/validation/schemas";
 import { PrismaReadinessContextLoader } from "./loader";
-import { ReadinessEngine, S1_RULE_CODE } from "./engine";
+import {
+  ReadinessEngine,
+  S1_RULE_CODE,
+  verificationFailure,
+} from "./engine";
 import { deriveRootBlockers } from "./dependency-analyzer";
+import { buildOutcome } from "./scoring";
 import { persistReadinessCheck } from "./persist";
 import type { ReadinessCheckInput } from "./types";
 
@@ -32,7 +37,25 @@ export class ReadinessService {
   async runCheck(input: unknown, actor: AuthUser): Promise<CheckWithResults> {
     const parsed = parseOrThrow(readinessCheckInputSchema, input);
 
-    await this.validateConfiguration(parsed);
+    // Safety Rule 1 applies to the ownership preflight too: if the database
+    // cannot be reached we must NOT skip validation and default to READY. A
+    // genuine "these IDs do not belong together" answer is a 400 (the request
+    // is invalid); anything else means the configuration could not be
+    // verified, which is a fail-safe BLOCKED result.
+    try {
+      await this.validateConfiguration(parsed);
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+
+      logger.error("readiness_preflight_failed", {
+        productId: parsed.productId,
+        bomVersionId: parsed.bomVersionId,
+        routingId: parsed.routingId,
+        lineId: parsed.lineId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return this.persistFailSafe(parsed, actor.id);
+    }
 
     const startedAt = new Date();
     const outcome = await engine.run(parsed);
@@ -60,6 +83,38 @@ export class ReadinessService {
       logger.error("readiness_check_persist_failed", {
         error: err instanceof Error ? err.message : String(err),
       });
+      throw ApiError.internal(
+        "READINESS_CHECK_FAILED",
+        "Unable to complete readiness validation."
+      );
+    }
+  }
+
+  /**
+   * Persist the fail-safe outcome for a configuration that could not be
+   * verified. The check is recorded as BLOCKED with the S1 safety result so
+   * the decision is auditable and can never be read as READY.
+   */
+  private async persistFailSafe(
+    parsed: ReadinessCheckInput,
+    actorId: string
+  ): Promise<CheckWithResults> {
+    const startedAt = new Date();
+    const outcome = buildOutcome([verificationFailure()], []);
+    const completedAt = new Date();
+
+    try {
+      return await persistReadinessCheck(
+        this.client,
+        parsed,
+        outcome,
+        actorId,
+        startedAt,
+        completedAt
+      );
+    } catch {
+      // The database is unavailable, so the fail-safe result cannot be
+      // recorded. Still refuse to return READY.
       throw ApiError.internal(
         "READINESS_CHECK_FAILED",
         "Unable to complete readiness validation."

@@ -1,13 +1,61 @@
-import type { PrismaClient, Product, ProductStatus } from "@/generated/prisma/client";
+import type {
+  PrismaClient,
+  Product,
+  ProductStatus,
+  ReadinessCheckStatus,
+} from "@/generated/prisma/client";
 import { prisma as defaultClient } from "@/lib/db/prisma";
 import { ApiError } from "@/lib/errors";
 import type { ProductCreateInput } from "@/lib/validation/schemas";
 
+/**
+ * Configuration pieces a product needs before a readiness check can even be
+ * requested. The order is the remediation order used by the UI.
+ */
+export type ConfigurationGap = "BOM" | "ROUTING";
+
+export interface ProductConfiguration {
+  hasBom: boolean;
+  hasRouting: boolean;
+  /**
+   * True when the product has both a BOM version and a routing. A product that
+   * exists in the catalog is NOT the same thing as a product that can be
+   * checked — an unconfigured product can never produce a READY result.
+   */
+  isConfigured: boolean;
+  /** What is still missing, in remediation order. Empty when configured. */
+  missing: ConfigurationGap[];
+}
+
+/**
+ * Pure derivation of the configuration status. Kept separate (and dependency
+ * free) so the rule is unit-testable and so the UI never has to re-derive it.
+ */
+export function deriveConfiguration(counts: {
+  bomVersions: number;
+  routings: number;
+}): ProductConfiguration {
+  const missing: ConfigurationGap[] = [];
+  if (counts.bomVersions < 1) missing.push("BOM");
+  if (counts.routings < 1) missing.push("ROUTING");
+  return {
+    hasBom: counts.bomVersions > 0,
+    hasRouting: counts.routings > 0,
+    isConfigured: missing.length === 0,
+    missing,
+  };
+}
+
 export interface ProductListItem extends Product {
   _count: { bomVersions: number; routings: number; readinessChecks: number };
-  lastCheckStatus?: string | null;
-  lastCheckScore?: number | null;
+  configuration: ProductConfiguration;
+  lastCheckStatus: ReadinessCheckStatus | null;
+  lastCheckScore: number | null;
 }
+
+const listItemSelect = {
+  _count: { select: { bomVersions: true, routings: true, readinessChecks: true } },
+} as const;
 
 export class ProductService {
   constructor(private readonly client: PrismaClient = defaultClient) {}
@@ -30,9 +78,7 @@ export class ProductService {
             }
           : {}),
       },
-      include: {
-        _count: { select: { bomVersions: true, routings: true, readinessChecks: true } },
-      },
+      include: listItemSelect,
       orderBy: [{ updatedAt: "desc" }],
       take: limit,
     });
@@ -46,15 +92,43 @@ export class ProductService {
     });
     const latestByProduct = new Map(checks.map((c) => [c.productId, c]));
 
-    return products.map((p) => ({
-      ...p,
-      lastCheckStatus: latestByProduct.get(p.id)?.status ?? null,
-      lastCheckScore: latestByProduct.get(p.id)?.score ?? null,
-    }));
+    return products.map((p) => this.toListItem(p, latestByProduct.get(p.id)));
   }
 
-  async getById(id: string): Promise<Product | null> {
-    return this.client.product.findUnique({ where: { id } });
+  /**
+   * Product detail. Returns the *same* shape as list() so the client can share
+   * one `ProductListItem` type between the catalog grid and the detail page.
+   */
+  async getById(id: string): Promise<ProductListItem | null> {
+    const product = await this.client.product.findUnique({
+      where: { id },
+      include: listItemSelect,
+    });
+    if (!product) return null;
+
+    const latest = await this.client.readinessCheck.findFirst({
+      where: { productId: id },
+      orderBy: { createdAt: "desc" },
+      select: { productId: true, status: true, score: true },
+    });
+    return this.toListItem(product, latest);
+  }
+
+  private toListItem(
+    product: Product & {
+      _count: { bomVersions: number; routings: number; readinessChecks: number };
+    },
+    latest?: { productId: string; status: ReadinessCheckStatus; score: number } | null
+  ): ProductListItem {
+    return {
+      ...product,
+      configuration: deriveConfiguration({
+        bomVersions: product._count.bomVersions,
+        routings: product._count.routings,
+      }),
+      lastCheckStatus: latest?.status ?? null,
+      lastCheckScore: latest?.score ?? null,
+    };
   }
 
   async create(input: ProductCreateInput, actorId: string): Promise<Product> {

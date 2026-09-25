@@ -65,10 +65,20 @@ export function summarize(
   };
 }
 
+/**
+ * Overall status, derived purely from blocking failures:
+ *
+ *   CRITICAL blocking failure  → BLOCKED
+ *   any other blocking failure → NOT_READY
+ *   otherwise                 → READY
+ *
+ * A non-blocking FAIL is a data-quality signal for the engineer, not a reason
+ * to hold production. It still lowers the category score via computeCategoryStatuses.
+ */
 export function overallStatus(checks: ReadinessRuleResult[]): ReadinessStatus {
-  const failures = checks.filter((c) => c.status === "FAIL");
-  if (failures.some((c) => c.severity === "CRITICAL")) return "BLOCKED";
-  if (failures.length > 0) return "NOT_READY";
+  const blockingFailures = checks.filter((c) => c.status === "FAIL" && c.isBlocking);
+  if (blockingFailures.some((c) => c.severity === "CRITICAL")) return "BLOCKED";
+  if (blockingFailures.length > 0) return "NOT_READY";
   return "READY";
 }
 

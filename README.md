@@ -28,7 +28,7 @@ A web application that:
 4. Produces an immutable, persisted result: status, score, per-category status, per-check detail, affected entities, remediation, root blockers, and dependency impacts.
 5. Exposes a clean REST API and a polished enterprise UI with history and blocker drill-down.
 
-The system is **fail-safe**: if required production configuration cannot be verified (database error, missing data, contradictory data, timeout, corrupt configuration), the result is **BLOCKED** — never READY.
+The system is **fail-safe**: if required production configuration cannot be verified (database error, missing data, contradictory data, timeout, corrupt configuration), the result is **BLOCKED** — never READY. It is also **honest about the difference between "exists" and "ready"**: a product with no BOM or no routing is presented as *not configurable* and cannot produce a readiness verdict at all.
 
 ---
 
@@ -44,6 +44,7 @@ src/
     api/                # request logging, consistent HTTP helpers
     auth/               # password hashing, DB-backed sessions, role guards
     client/             # typed API client + TanStack Query hooks
+    configuration.ts    # shared, presentational-only configuration gap labels
     db/                 # Prisma client singleton
     logging/            # structured logger (requestId, action, duration)
     security/           # rate limiting, headers
@@ -62,11 +63,11 @@ src/
   prisma/
     schema.prisma
     migrations/
-    seed.ts             # 5 deliberate scenarios, self-verifying
+    seed.ts             # 5 configured scenarios + 1 unconfigured product, self-verifying
   tests/
-    unit/               # every rule + engine + scoring + dependency analyzer
+    unit/               # every rule + engine + scoring + dependency analyzer + services
     integration/        # POST /api/readiness/check against seeded PostgreSQL
-    e2e/                # Playwright critical flow
+    e2e/                # Playwright critical flows
 ```
 
 **Key architectural properties:**
@@ -89,13 +90,13 @@ src/
 | API | Next.js Route Handlers |
 | Database | PostgreSQL 14+ via Prisma ORM 7 (`@prisma/adapter-pg`) |
 | Testing | Vitest, React Testing Library, Playwright |
-| Auth | Database-backed sessions (HttpOnly cookie), Argon2id password hashing, RBAC |
+| Auth | Database-backed sessions (HttpOnly cookie), scrypt password hashing, RBAC |
 
 ---
 
 ## Database Schema
 
-18 models in `prisma/schema.prisma`. Core domain models:
+18 models and 15 enums in `prisma/schema.prisma`. Core domain models:
 
 `Product`, `BOMVersion`, `BOMItem`, `Routing`, `RoutingOperation`, `Station`, `Line`, `WorkInstruction`, `Operator`, `OperatorStationAssignment`, `IdentifierRange`, `InventoryItem`, `ProductInventoryMapping`.
 
@@ -105,13 +106,15 @@ Supporting: `AuditLog`, `User` (ADMIN / ENGINEER / VIEWER), `Session`.
 
 **Constraints enforce data integrity** (Safety Rule 6):
 
-- Unique `(routingId, sequence)` on routing operations.
-- Unique `(productId, version)` on BOM versions; unique `(productId, code)` on routings.
-- Unique `(productId, prefix)` on identifier ranges; unique `(productId, inventoryItemId, mappingType)` on mappings.
-- Unique `(employeeCode)` on operators; unique `(stationId, operatorId, validFrom)` on assignments.
-- Unique `(routingOperationId, version)` on work instructions.
-- Foreign keys throughout with intentional `onDelete` behavior; indexes on all lookup columns.
-- **Partial unique index on `ReadinessResult`** guaranteeing one result per `(readinessCheckId, ruleCode)`.
+- Unique `(routingId, sequence)` on routing operations — duplicate sequences are impossible at the storage layer, so `ROUTING_SEQUENCE_DUPLICATE` is defence in depth.
+- Unique `(productId, version)` on BOM versions; unique `(productId, code)` on routings; unique `sku` on products and inventory items.
+- Unique `(bomVersionId, componentSku)` on BOM items — duplicate component records cannot be stored.
+- Unique `(productId, prefix)` on identifier ranges; unique `(productId, mappingType)` on inventory mappings — a product can have **at most one** output mapping in the database, which is what makes the duplicate-active-mapping scenario (`INVENTORY_SINGLE_ACTIVE`) a true integrity signal rather than a UI check.
+- Unique `(routingOperationId, version)` on work instructions; unique `employeeCode` on operators.
+- Foreign keys throughout with intentional `onDelete` behavior: `Cascade` for configuration that cannot exist without its parent, `Restrict` for configuration that is referenced by an immutable audit record (`ReadinessCheck` → product/BOM/routing/line).
+- Indexes on every lookup/filter column used by the readiness loader (`(productId, status)`, `(stationId, status)`, `(readinessCheckId)`, `(productId, createdAt)`, …).
+
+> **Note on what the DB does *not* constrain:** operator-station assignments are indexed but not unique, so two overlapping assignments for the same operator and station can coexist in the data. `OPERATOR_*` rules resolve that at check time by picking currently-valid assignments, and `ReadinessResult` is indexed by `readinessCheckId` (one row per rule result is produced by the transaction, not by a unique index). These are deliberate: the rules stay deterministic without relying on storage-level guarantees that a real plant's legacy data would violate.
 
 ---
 
@@ -174,7 +177,7 @@ A numerical score is shown for visibility but **never overrides** the status. Ex
 | **3. Duplicate active configuration** | Two active BOMs, two active output mappings, duplicate routing sequences, overlapping identifier ranges → blocking failures where appropriate. |
 | **4. Expired assignments** | An expired operator assignment is never treated as valid. |
 | **5. Maintenance stations** | A `MAINTENANCE` station is never production-ready. |
-| **6. Data integrity** | Foreign keys, unique constraints, partial unique indexes, transactions, timestamps. Inconsistent data is never silently repaired — it produces FAIL/BLOCKED results. |
+| **6. Data integrity** | Foreign keys, unique constraints, indexes, transactions, timestamps. Inconsistent data is never silently repaired — it produces FAIL/BLOCKED results. |
 
 ## Dependency Analysis (Root Blockers)
 
@@ -290,7 +293,7 @@ Rejected with `400` when fields are missing/malformed, or when the BOM/routing d
 ## Security
 
 - **Authentication:** database-backed sessions. The cookie carries a random 256-bit token; only its **SHA-256 hash** is persisted, so a leaked database cannot be used to impersonate users. Cookie is `HttpOnly`, `SameSite=Lax`, `Secure` in production. (Auth is intentionally self-contained for the hackathon — documented, not delegated to an external IdP.)
-- **Passwords:** Argon2id hashing with a random per-user salt and a server-side AUTH_SECRET pepper. Plaintext is never stored or logged.
+- **Passwords:** `scrypt` (Node `crypto`, 64-byte key) with a random 16-byte per-user salt and a server-side `AUTH_SECRET` pepper, compared with `timingSafeEqual`. Format `scrypt$<saltHex>$<keyHex>`. Plaintext is never stored or logged.
 - **Authorization (server-enforced):** `ADMIN` manages configuration; `ENGINEER` runs readiness checks; `VIEWER` views results. Route handlers verify roles server-side via `lib/auth/guard` — frontend role checks alone are never trusted.
 - **Input security:** Zod schemas on every write endpoint; malformed JSON, oversized requests, and unknown fields rejected; IDs validated against the database. All database access goes through the Prisma ORM (parameterized) — no interpolated SQL.
 - **Rate limiting:** in-memory token-bucket limiter on auth + check endpoints (per-IP). See Tradeoffs for the production caveat.
@@ -315,7 +318,7 @@ cp .env.example .env        # then fill in real values (see below)
 
 # 3. Create the databases (dev + test), then migrate + seed
 npm run db:migrate          # prisma migrate dev  (creates npi_dev tables)
-npm run db:seed             # prisma db seed      (5-scenario demo + users)
+npm run db:seed             # prisma db seed      (5 configured scenarios + 1 unconfigured product + 3 users)
 ```
 
 For the integration tests, point `TEST_DATABASE_URL` at a second database (e.g. `npi_test`) and run:
@@ -332,7 +335,7 @@ npm run test
 ```env
 DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/npi_dev   # app + Prisma CLI
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/npi_test  # vitest integration suite
-AUTH_SECRET=replace-with-a-random-32-byte-hex-string             # argon2 pepper + session signing
+AUTH_SECRET=replace-with-a-random-32-byte-hex-string             # password pepper + session token derivation
 SESSION_TTL_DAYS=7                                               # session lifetime (default 7)
 ```
 
@@ -356,7 +359,9 @@ Open the app, sign in (see demo credentials), and use **Run Check**:
 
 The readiness page disables the button while a check is running and shows staged progress (Validating BOM… Validating Routing… Validating Stations… Validating Operators… Analyzing blockers…).
 
-On the **Products** page, ADMIN users get an **Add product** button (the same role the server enforces on `POST /api/products`). The dialog validates with the *shared* Zod schema, defaults to `DRAFT` status, and the new product appears in the catalog and dashboard immediately after creation.
+If the selected product is missing a BOM or a routing, the page says so inline next to the affected selector, shows a per-product callout naming the missing pieces, and disables **Run Readiness Check** with a hint linked via `aria-describedby`. Selections are always filtered by the chosen product, so the dropdowns can never offer a BOM or routing from a different product.
+
+On the **Products** page, ADMIN users get an **Add product** button (the same role the server enforces on `POST /api/products`). The dialog validates with the *shared* Zod schema, defaults to `DRAFT` status, and the new product appears in the catalog and dashboard immediately after creation. A newly added product is immediately badged `NOT CONFIGURED` — creating a product does not create its BOM, routing or line configuration.
 
 ### Demo credentials
 
@@ -373,26 +378,28 @@ On the **Products** page, ADMIN users get an **Add product** button (the same ro
 ```bash
 npm run lint          # ESLint
 npm run typecheck     # tsc --noEmit
-npm run test          # Vitest: 95 unit + integration + UI tests (uses TEST_DATABASE_URL)
-npm run test:e2e      # Playwright critical flows against dev server + seeded db
-npm run build         # production build (all 24 routes)
+npm run test          # Vitest: 115 unit + integration + UI tests across 17 files (uses TEST_DATABASE_URL)
+npm run test:e2e      # Playwright: 4 critical flows against dev server + seeded db
+npm run build         # production build
 ```
 
 **Test coverage:**
 
-- **Unit + UI tests:** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking), dependency analysis (root vs impact dedup), remediation, serialization, and the Add Product dialog (shared-schema validation, payload contract, server-error surfacing).
-- **Integration tests:** `POST /api/readiness/check` against a real seeded PostgreSQL database — verifies status, score, blockers, and transaction persistence. Auth is mocked at the session boundary.
+- **Unit + UI tests:** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking, and a non-blocking FAIL no longer forces NOT_READY), dependency analysis (root vs impact dedup), remediation, serialization, product configuration derivation, readiness-service preflight fail-safe (a DB error during ownership validation persists a BLOCKED check instead of bypassing the engine), and the Add Product dialog (shared-schema validation, payload contract, server-error surfacing).
+- **Integration tests:** `POST /api/readiness/check` against a real seeded PostgreSQL database — verifies status, score, blockers, persistence, the exact outcome of all five seeded scenarios, rejection of an unconfigured product (400, never a persisted "ready" check), and the product-configuration projection. Auth is mocked at the session boundary.
 - **E2E (Playwright):**
   1. ENGINEER logs in, selects a product/BOM/routing/line, runs a check, sees results (71%, NOT READY), opens a blocker, views remediation.
   2. Unauthenticated users are redirected to login.
   3. ADMIN creates a product through the Add product dialog (unique SKU per run; appears in the catalog), while the ENGINEER does not see the admin-only action.
-  All E2E runs hit the real dev server and seeded demo DB, so server-side auth + role checks are exercised for real.
+  4. An **unconfigured** product (`PS5`, no BOM, no routing) is badged `NOT CONFIGURED` in the catalog, shows exactly what is missing on its detail page, and cannot reach or run a check.
+
+  All E2E runs hit the real dev server and seeded demo DB, so server-side auth + role checks are exercised for real. The product created by test 3 is deleted in `afterAll`, so repeated runs leave the demo catalog at exactly the 6 seeded products.
 
 ---
 
 ## Example Readiness Scenarios (Seeded)
 
-The seed (`npm run db:seed`) builds **5 products**, **6 BOM versions**, **20+ BOM items**, **5 routings**, **20+ routing operations**, **15 stations**, **3 lines**, **15 operators**, work instructions, identifier ranges, inventory items and mappings — and deliberately verifies the engine's expected outcomes at seed time.
+The seed (`npm run db:seed`) builds **6 products** (5 configured + 1 deliberately unconfigured), **6 BOM versions**, **28 BOM items**, **5 routings**, **20 routing operations**, **20 work instructions**, **15 stations**, **3 lines**, **15 operators**, **12 operator assignments** (one deliberately expired), **6 identifier ranges**, **5 inventory items** and **5 output mappings** — and deliberately verifies the engine's expected outcomes at seed time.
 
 | Product | SKU | Scenario defect | Result |
 | --- | --- | --- | --- |
@@ -401,8 +408,15 @@ The seed (`npm run db:seed`) builds **5 products**, **6 BOM versions**, **20+ BO
 | Control Unit 2000 | `CTU-2000` | Missing operator assignments | **NOT_READY — 86%** (2 blockers) |
 | Display Module 4000 | `DPL-4000` | Inactive station on routing | **BLOCKED — 57%** (1 critical blocker) |
 | Power Supply 5000 | `PS-5000` | Conflicting config (2 active BOMs + overlapping identifier ranges) | **BLOCKED — 71%** (2 critical blockers) |
+| PlayStation 5 | `PS5` | *No BOM version, no routing* | **Not checkable** — badged `NOT CONFIGURED`, `Run check` disabled, and no readiness record can exist |
 
 If a seeded environment's outcome ever diverges from these expectations, the seed script fails loudly — the demo can never silently drift.
+
+### Why an unconfigured product has no readiness record
+
+"Exists" ≠ "ready". `POST /api/readiness/check` **requires** a BOM version and a routing that both belong to the selected product, so an unconfigured product is rejected with a `400` before the engine ever runs. It is never persisted as a `BLOCKED` check either — a `BLOCKED` record would imply the configuration was checked and found unsafe, which is not what happened. The UI surfaces the same truth without a request: the catalog badges it `NOT CONFIGURED`, and the product detail, catalog and Run Check pages all state exactly which pieces are missing and why the check cannot be started.
+
+The fail-safe `BLOCKED` path is reserved for genuine *inability to verify* — a database/loader failure during the ownership preflight, or a context-load or rule crash. Those persist an `S1_VERIFICATION_FAILED` CRITICAL result rather than bypassing the engine.
 
 ---
 
@@ -413,6 +427,8 @@ If a seeded environment's outcome ever diverges from these expectations, the see
 - **Injectable clock + injectable loader** make rules deterministic and unit-testable without a database.
 - **Immutable results.** Historical checks are never rewritten; category statuses and root blockers are re-derived from stored results on read.
 - **Fail-safe by construction.** Status is *derived* from checks (CRITICAL → BLOCKED, any blocking → NOT_READY, else READY) rather than stored independently — a bug in persistence cannot accidentally produce READY.
+- **Configuration status is derived once, on the server.** `ProductService.deriveConfiguration()` turns raw BOM/routing/line counts into a typed `ProductConfiguration` (gaps + `isFullyConfigured`). The catalog, the product detail page and the Run Check page all render that one server projection, so no React component re-implements "is this product ready to be checked" and the three pages can never disagree.
+- **"Not configured" is a distinct state from "not ready".** It is surfaced explicitly (badge, named missing pieces, disabled action, `aria-disabled` + `aria-describedby`) instead of being folded into a rule failure, because there is nothing to score yet.
 - **DB-backed sessions with hashed tokens** — a pragmatic, secure auth that needs no external provider.
 - **Server-side role enforcement** on every route handler; middleware provides an optimistic UX redirect, never an authorization decision.
 

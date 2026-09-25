@@ -17,7 +17,12 @@ export const S1_RULE_CODE = "S1_VERIFICATION_FAILED";
 export const VERIFICATION_BLOCKED_MESSAGE =
   "Unable to verify critical production configuration. Production readiness cannot be confirmed.";
 
-function verificationFailure(
+/**
+ * The single canonical fail-safe result (Safety Rule 1). Exported so the
+ * service layer can persist the same outcome when its own preflight — not just
+ * the engine — fails to verify the configuration.
+ */
+export function verificationFailure(
   message: string = VERIFICATION_BLOCKED_MESSAGE
 ): ReadinessRuleResult {
   return {

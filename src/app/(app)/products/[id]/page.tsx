@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ClipboardCheck } from "lucide-react";
 import { useBoms, useHistory, useProduct, useRoutings } from "@/lib/client/queries";
+import { describeConfigurationGaps } from "@/lib/configuration";
 import { formatDateTime } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +33,10 @@ export default function ProductDetailPage() {
   }
 
   const p = product.data;
+  const { isConfigured, missing } = p.configuration;
+  // The checks below use the server-derived configuration so the UI never
+  // re-derives readiness business rules from raw counts.
+  const missingLabel = describeConfigurationGaps(missing);
 
   return (
     <div className="space-y-6">
@@ -50,13 +55,32 @@ export default function ProductDetailPage() {
               {p.status}
             </Badge>
             <span className="font-mono text-sm text-muted-foreground">{p.sku}</span>
+            <Badge
+              variant={isConfigured ? "success" : "danger"}
+              className="ml-2"
+            >
+              {isConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+            </Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             {p.description ?? "No description provided."}
           </p>
+          {!isConfigured ? (
+            <p
+              role="status"
+              className="mt-3 max-w-2xl rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger"
+            >
+              This product is missing {missingLabel}. It cannot be checked for production
+              readiness until that is configured, and it must never be reported as ready.
+            </p>
+          ) : null}
         </div>
-        <Button asChild size="sm">
-          <Link href="/readiness">
+        <Button asChild size="sm" disabled={!isConfigured}>
+          <Link
+            href={isConfigured ? `/readiness?product=${p.id}` : "#"}
+            aria-disabled={!isConfigured}
+            tabIndex={isConfigured ? undefined : -1}
+          >
             <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
             Run check
           </Link>
@@ -89,7 +113,11 @@ export default function ProductDetailPage() {
                 ))}
               </ul>
             ) : (
-              <EmptyState title="No BOM versions" className="py-8" />
+              <EmptyState
+                title="No BOM versions configured"
+                description="No BOM version exists for this product. A BOM must be created before a readiness check can be run."
+                className="py-8"
+              />
             )}
           </CardContent>
         </Card>
@@ -121,7 +149,11 @@ export default function ProductDetailPage() {
                 ))}
               </ul>
             ) : (
-              <EmptyState title="No routings" className="py-8" />
+              <EmptyState
+                title="No routings configured"
+                description="No routing exists for this product. A routing must be created before a readiness check can be run."
+                className="py-8"
+              />
             )}
           </CardContent>
         </Card>

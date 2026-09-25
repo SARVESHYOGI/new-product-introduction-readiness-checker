@@ -74,6 +74,48 @@ describe("Readiness scoring", () => {
     expect(status).toBe("READY");
   });
 
+  it("ignores a non-blocking FAIL when deriving the overall status", () => {
+    // The contract is defined in terms of *blocking* failures. A non-blocking
+    // FAIL is an engineer-facing data-quality signal, not a production hold.
+    const status = overallStatus([
+      result({ status: "FAIL", severity: "LOW", isBlocking: false, message: "f" }),
+    ]);
+    expect(status).toBe("READY");
+  });
+
+  it("ignores a non-blocking CRITICAL-severity FAIL for the overall status", () => {
+    // Severity alone does not gate production: only blocking failures do.
+    const status = overallStatus([
+      result({ status: "FAIL", severity: "CRITICAL", isBlocking: false, message: "f" }),
+    ]);
+    expect(status).toBe("READY");
+  });
+
+  it("still holds production for a blocking FAIL regardless of severity", () => {
+    expect(
+      overallStatus([result({ status: "FAIL", severity: "LOW", isBlocking: true, message: "f" })])
+    ).toBe("NOT_READY");
+    expect(
+      overallStatus([
+        result({ status: "FAIL", severity: "CRITICAL", isBlocking: true, message: "f" }),
+      ])
+    ).toBe("BLOCKED");
+  });
+
+  it("a non-blocking FAIL still lowers the category score", () => {
+    const outcome = buildOutcome(
+      [
+        ...READINESS_CATEGORIES.filter((c) => c !== "BOM").map((category) =>
+          result({ category, message: "ok" })
+        ),
+        result({ category: "BOM", status: "FAIL", severity: "LOW", isBlocking: false, message: "f" }),
+      ],
+      []
+    );
+    expect(outcome.score).toBe(86);
+    expect(outcome.status).toBe("READY");
+  });
+
   it("computeCategoryStatuses marks unseen categories UNVERIFIED", () => {
     const statuses = computeCategoryStatuses([
       result({ category: "BOM", message: "ok" }),
