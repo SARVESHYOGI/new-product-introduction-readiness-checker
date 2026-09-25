@@ -53,6 +53,15 @@ test("engineer runs a readiness check and views blocker remediation", async ({ p
   ).toBeVisible();
   await expect(page.getByText("Read-only access")).toHaveCount(0);
 
+  // React logs the "Select is changing from uncontrolled to controlled"
+  // warning through console.error. Capture console errors over the whole
+  // interaction and assert none of them is such a warning (or any React
+  // warning) at the end — regression guard for the run check selects.
+  const consoleErrors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
+
   // 3–6. Select product, BOM version, routing and production line.
   await selectOption(page, "Product", CONFIG.product);
   await selectOption(page, "BOM Version", CONFIG.bom);
@@ -98,6 +107,12 @@ test("engineer runs a readiness check and views blocker remediation", async ({ p
 
   // Results are immutable — the page states this explicitly.
   await expect(page.getByText(/Results are immutable/)).toBeVisible();
+
+  // No React warnings (e.g. uncontrolled→controlled selects) may have been
+  // emitted during the run-check interaction.
+  expect(
+    consoleErrors.filter((t) => /Select is changing|^Warning:/i.test(t))
+  ).toEqual([]);
 });
 
 test("unauthenticated users cannot reach protected pages", async ({ page }) => {

@@ -132,7 +132,7 @@ export default function RunCheckPage() {
                 <div className="space-y-2">
                   <Label htmlFor="product">Product</Label>
                   <Select
-                    value={productId || undefined}
+                    value={productId}
                     onValueChange={(v) => {
                       setProductId(v);
                       resetDependents();
@@ -154,7 +154,7 @@ export default function RunCheckPage() {
                 <div className="space-y-2">
                   <Label htmlFor="bom">BOM Version</Label>
                   <Select
-                    value={bomVersionId || undefined}
+                    value={bomVersionId}
                     onValueChange={setBomVersionId}
                     disabled={!productId}
                   >
@@ -182,7 +182,7 @@ export default function RunCheckPage() {
                 <div className="space-y-2">
                   <Label htmlFor="routing">Routing</Label>
                   <Select
-                    value={routingId || undefined}
+                    value={routingId}
                     onValueChange={setRoutingId}
                     disabled={!productId}
                   >
@@ -209,7 +209,7 @@ export default function RunCheckPage() {
 
                 <div className="space-y-2">
                   <Label htmlFor="line">Production Line</Label>
-                  <Select value={lineId || undefined} onValueChange={setLineId}>
+                  <Select value={lineId} onValueChange={setLineId}>
                     <SelectTrigger id="line">
                       <SelectValue placeholder="Select a production line" />
                     </SelectTrigger>
