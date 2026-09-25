@@ -101,21 +101,28 @@ describe("createPgPoolConfig TLS", () => {
     expect(createPgPoolConfig(LOCAL).ssl).toBe(false);
   });
 
-  it("enables TLS for a remote host when sslmode is absent (Vercel case)", () => {
+  it("enables verified TLS for a remote host when sslmode is absent (Vercel case)", () => {
     const ssl = createPgPoolConfig("postgresql://u:p@db.neon.tech:5432/npi").ssl;
-    expect(ssl).toEqual({ rejectUnauthorized: false });
+    expect(ssl).toEqual({ rejectUnauthorized: true });
   });
 
-  it("keeps TLS enabled but skips chain verification for sslmode=require", () => {
+  it("verifies the certificate for sslmode=require rather than trusting it blindly", () => {
     const ssl = createPgPoolConfig("postgresql://u:p@db.example.com/npi?sslmode=require")
       .ssl;
-    expect(ssl).toEqual({ rejectUnauthorized: false });
+    expect(ssl).toEqual({ rejectUnauthorized: true });
   });
 
   it("verifies the certificate chain for verify-full", () => {
     const ssl = createPgPoolConfig("postgresql://u:p@db.example.com/npi?sslmode=verify-full")
       .ssl;
     expect(ssl).toEqual({ rejectUnauthorized: true });
+  });
+
+  it("only skips verification for an explicit no-verify opt-out", () => {
+    const ssl = createPgPoolConfig("postgresql://u:p@db.example.com/npi", {
+      DATABASE_SSL: "no-verify",
+    }).ssl;
+    expect(ssl).toEqual({ rejectUnauthorized: false });
   });
 
   it("lets DATABASE_SSL override the mode embedded in the URL", () => {
@@ -129,6 +136,25 @@ describe("createPgPoolConfig TLS", () => {
     expect(() =>
       createPgPoolConfig("postgresql://u:p@db.example.com/npi", { DATABASE_SSL: "maybe" })
     ).toThrow(DatabaseConfigurationError);
+  });
+
+  it("never silently downgrades a remote connection to unverified TLS", () => {
+    for (const mode of ["require", "allow", "prefer", "verify-ca", "verify-full"]) {
+      expect(createPgPoolConfig("postgresql://u:p@db.example.com/npi?sslmode=require", {
+        DATABASE_SSL: mode,
+      }).ssl).toEqual({ rejectUnauthorized: true });
+    }
+  });
+
+  it("ignores libpq's channel_binding parameter, which pg does not support", () => {
+    // `channel_binding=require` is silently dropped by pg (it only reads
+    // `enableChannelBinding`), so it must not reach the pool config and must not
+    // cause the connection to be rejected.
+    const config = createPgPoolConfig(
+      "postgresql://u:p@db.example.com/npi?sslmode=require&channel_binding=require"
+    );
+    expect(config).not.toHaveProperty("channel_binding");
+    expect(config.ssl).toEqual({ rejectUnauthorized: true });
   });
 });
 

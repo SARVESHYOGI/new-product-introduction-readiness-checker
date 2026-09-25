@@ -3,11 +3,12 @@ import type { PoolConfig } from "pg";
 /**
  * Runtime PostgreSQL configuration.
  *
- * Prisma 7's pg adapter does not reliably apply the `sslmode` query parameter
- * when it is given a connection string. That is especially problematic on
- * Vercel, where the database is remote and normally requires TLS. We therefore
- * parse the URL and pass explicit PoolConfig fields to the adapter. The URL is
- * never included in an error message or log record.
+ * `pg` accepts a raw connection string and parses `sslmode` out of it, but it
+ * silently drops parameters it does not understand (`channel_binding`) and
+ * offers no control over pool sizing, connection timeouts, or TLS verification
+ * policy. Parsing the URL here and passing explicit `PoolConfig` fields makes
+ * the connection behaviour explicit, testable, and identical between the app and
+ * the seed. The URL is never included in an error message or log record.
  */
 
 const DEFAULT_CONNECTION_TIMEOUT_MS = 8_000;
@@ -73,21 +74,27 @@ function resolveSsl(url: URL, environment: Environment): PoolConfig["ssl"] {
   const mode = configured || fromUrl || (isLocalHost(url.hostname) ? "disable" : "require");
 
   if (mode === "disable" || mode === "false" || mode === "0") return false;
-  if (mode === "allow" || mode === "prefer" || mode === "no-verify") {
+
+  if (mode === "no-verify") {
+    // Explicit opt-out only. Use this solely for a provider whose CA is not in
+    // the runtime trust store; it accepts any certificate and therefore does
+    // not protect against an active network attacker.
     return { rejectUnauthorized: false };
   }
-  if (mode === "require" || mode === "true" || mode === "1") {
-    // Managed PostgreSQL providers commonly use a certificate chain that is not
-    // present in the Vercel runtime trust store. TLS is still enabled; operators
-    // can opt into certificate verification with verify-ca/verify-full.
-    return { rejectUnauthorized: false };
-  }
-  if (mode === "verify-ca" || mode === "verify-full") {
+
+  if (["require", "true", "1", "allow", "prefer", "verify-ca", "verify-full"].includes(mode)) {
+    // Certificate verification stays ON.
+    //
+    // libpq treats `require` as "encrypt but do not verify", but pg maps
+    // require/verify-ca/prefer to a verifying configuration, and that is the
+    // behaviour this project already had. Turning verification off here would
+    // silently *weaken* an existing deployment, so every TLS mode keeps it
+    // enabled and `no-verify` is the single, deliberate escape hatch.
     return { rejectUnauthorized: true };
   }
 
   throw new DatabaseConfigurationError(
-    "DATABASE_SSL must be disable, require, verify-ca, or verify-full."
+    "DATABASE_SSL must be disable, require, verify-ca, verify-full, or no-verify."
   );
 }
 

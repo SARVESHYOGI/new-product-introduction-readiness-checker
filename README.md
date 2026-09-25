@@ -423,13 +423,18 @@ Generate a secret with `openssl rand -hex 32`. **Never commit `.env`.**
 **explicit** `PoolConfig` (host, port, database, user, password, `ssl`, pool
 size, timeouts) instead of a raw connection string.
 
-This is deliberate. Prisma 7's `pg` driver adapter does not reliably apply the
-`sslmode` query parameter when it is given a connection string, so a remote
-database that requires TLS — exactly the Vercel + Neon/Supabase case — can fail
-to connect even though the URL is correct. Passing explicit fields sidesteps
-that. TLS defaults to `require` for any non-local host and `disable` for
-`localhost`; `verify-ca` / `verify-full` turn on certificate verification for
-providers whose CA is in the runtime trust store.
+This is deliberate. Handing `pg` a raw string leaves TLS policy, pool size, and
+timeouts implicit, and `pg` silently drops URL parameters it does not understand
+(`channel_binding` is one such parameter). Parsing the URL here makes the
+behaviour explicit and identical between the app and the seed.
+
+TLS defaults to `require` for any non-local host and `disable` for `localhost`.
+**Certificate verification is on for every TLS mode** — `require`, `verify-ca`,
+and `verify-full` all return `rejectUnauthorized: true`. libpq treats `require`
+as "encrypt but do not verify", but `pg` maps it to a verifying configuration
+and that is what an existing deployment already relies on, so weakening it
+silently is not acceptable. `no-verify` is the single, deliberate escape hatch
+for a provider whose CA is not in the runtime trust store.
 
 Pool defaults are sized for serverless (5 connections per instance, dropping to
 1 behind a transaction pooler such as PgBouncer) with an 8s connection timeout,
@@ -485,11 +490,18 @@ Set these in the Vercel project for **every** environment you deploy
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | yes | Pooled PostgreSQL URL. Must point at the same environment you deploy to. |
+| `DATABASE_URL` | yes | Pooled PostgreSQL URL, with `sslmode=require`. Must point at the same environment you deploy to. |
 | `AUTH_SECRET` | yes | `openssl rand -hex 32`. **Changing it invalidates every existing password hash.** |
 | `SESSION_TTL_DAYS` | no | Defaults to `7`. |
-| `DATABASE_SSL` | no | Defaults to `require` for remote hosts. Set `verify-full` only if the CA is trusted. |
-| `DATABASE_POOL_MAX` | no | Defaults to `5`, or `1` with `?pgbouncer=true`. |
+| `DATABASE_SSL` | no | Defaults to `require` for remote hosts, certificate verification on. |
+| `DATABASE_POOL_MAX` | no | Set to `1` behind a pooler (Neon's `-pooler` host, PgBouncer, Supabase pooler). |
+
+> **A pooled endpoint still needs one connection per instance.** If your
+> `DATABASE_URL` points at a PgBouncer-style pooler, set `DATABASE_POOL_MAX=1`
+> and append `?pgbouncer=true` to the URL so the app opens a single connection.
+> Without it each warm serverless instance opens up to 5, which exhausts the
+> provider's connection limit and shows up as intermittent `503`s rather than a
+> hard failure.
 
 ### 3. Apply migrations
 
@@ -500,9 +512,19 @@ tables. A fresh production database must be migrated once:
 DATABASE_URL="<production-pooled-url>" npx prisma migrate deploy
 ```
 
-`migrate deploy` only applies pending migrations; it never drops data, so it is
-safe to re-run and is the correct command for CI. There is no `vercel.json` that
-runs this automatically, so run it deliberately as a release step.
+> **This is almost certainly the cause of a `500` on `/api/auth/login` against a
+> newly provisioned database.** With no `"User"` table, `prisma.user.findUnique`
+> fails on *every* sign-in attempt — valid credentials and unknown users alike —
+> while request-body validation still returns `400` normally. `migrate deploy`
+> only applies pending migrations; it never drops data, so it is safe to re-run
+> and is the correct command for CI. There is no `vercel.json` that runs this
+> automatically, so run it deliberately as a release step.
+
+Confirm it took effect before redeploying:
+
+```bash
+DATABASE_URL="<production-pooled-url>" npx prisma migrate status
+```
 
 ### 4. Create an admin user
 

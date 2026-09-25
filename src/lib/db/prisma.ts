@@ -3,10 +3,9 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { createPgPoolConfig, resolveDatabaseUrl } from "@/lib/db/config";
 
 function createPrismaClient(): PrismaClient {
-  // Explicit PoolConfig rather than `{ connectionString }`: Prisma 7's pg
-  // adapter does not reliably apply `sslmode` from a connection string, so a
-  // remote (Vercel) database that requires TLS fails to connect. See
-  // src/lib/db/config.ts.
+  // Explicit PoolConfig rather than `{ connectionString }`: it pins the TLS
+  // policy, drops parameters pg does not understand, and bounds the pool for
+  // serverless. See src/lib/db/config.ts.
   const adapter = new PrismaPg(createPgPoolConfig(resolveDatabaseUrl()));
   return new PrismaClient({ adapter });
 }
