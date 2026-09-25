@@ -24,13 +24,16 @@ import { pathToFileURL } from "node:url";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "../src/lib/auth/password";
+import { createPgPoolConfig, resolveDatabaseUrl } from "../src/lib/db/config";
 import { ReadinessEngine } from "../src/modules/readiness/engine";
 import { PrismaReadinessContextLoader } from "../src/modules/readiness/loader";
 import { persistReadinessCheck } from "../src/modules/readiness/persist";
 import { logger } from "../src/lib/logging/logger";
 
 const client = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }),
+  // Same explicit pool config the application uses, so the seed exercises the
+  // exact TLS/connection path that production will.
+  adapter: new PrismaPg(createPgPoolConfig(resolveDatabaseUrl())),
 });
 
 /**
@@ -119,7 +122,7 @@ async function seedCore(): Promise<void> {
     { id: "asg_104", operatorId: "op_004", stationId: "st_104", validFrom: from, validTo: to, status: "ACTIVE" as const },
     { id: "asg_105", operatorId: "op_008", stationId: "st_105", validFrom: from, validTo: to, status: "ACTIVE" as const },
     // Expired assignment on the same station (safety realism; a valid one exists).
-    { id: "asg_105b", operatorId: "op_009", stationId: "st_105", validFrom: new Date("2022-01-01T00:00:00Z"), validTo: new Date("2023-01-01T00:00:00Z"), status: "EXPIRED" as const },
+    { id: "asg_105b", operatorId: "op_009", stationId: "st_105", validFrom: new Date("2022-01-01T00:00:00Z"), validTo: new Date("2023-01-01T00:00:00Z"), status: "ACTIVE" as const },
     { id: "asg_204", operatorId: "op_010", stationId: "st_204", validFrom: from, validTo: to, status: "ACTIVE" as const },
     { id: "asg_205", operatorId: "op_011", stationId: "st_205", validFrom: from, validTo: to, status: "ACTIVE" as const },
     { id: "asg_206", operatorId: "op_012", stationId: "st_206", validFrom: from, validTo: to, status: "ACTIVE" as const },

@@ -15,12 +15,25 @@ export interface User {
   role: UserRole;
 }
 
-/** Configuration pieces a product needs before a check can be requested. */
-export type ConfigurationGap = "BOM" | "ROUTING";
+/**
+ * Gaps in the configuration a product needs before a check can be requested.
+ * Status-aware: a product whose only BOM/routing is DRAFT (or whose ACTIVE
+ * BOM/routing is empty) is not checkable even though rows exist. The order is
+ * the remediation order shown by the UI.
+ */
+export type ConfigurationGap =
+  | "ACTIVE_BOM"
+  | "BOM_REQUIRED_ITEMS"
+  | "ACTIVE_ROUTING"
+  | "ROUTING_OPERATIONS";
 
 export interface ProductConfiguration {
   hasBom: boolean;
   hasRouting: boolean;
+  /** True when at least one ACTIVE BOM version has a required component. */
+  activeBomWithRequiredItems: boolean;
+  /** True when at least one ACTIVE routing has an operation. */
+  activeRoutingWithOperations: boolean;
   /** A product can exist in the catalog and still be unconfigured. */
   isConfigured: boolean;
   missing: ConfigurationGap[];

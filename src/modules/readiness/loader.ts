@@ -27,38 +27,38 @@ export class PrismaReadinessContextLoader implements ReadinessContextLoader {
     try {
       return await this.client.$transaction(
         async (tx) => {
-          const [product, bomVersion, routing, line, identifierRanges, inventoryMappings, productBoms, productRoutings] =
-            await Promise.all([
-              tx.product.findUnique({ where: { id: input.productId } }),
-              tx.bOMVersion.findUnique({
-                where: { id: input.bomVersionId },
-                include: { items: { orderBy: { componentName: "asc" } } },
-              }),
-              tx.routing.findUnique({
-                where: { id: input.routingId },
-                include: { operations: { orderBy: { sequence: "asc" } } },
-              }),
-              tx.line.findUnique({
-                where: { id: input.lineId },
-                include: { stations: true },
-              }),
-              tx.identifierRange.findMany({
-                where: { productId: input.productId },
-                orderBy: { startNumber: "asc" },
-              }),
-              tx.productInventoryMapping.findMany({
-                where: { productId: input.productId },
-                include: { inventoryItem: true },
-              }),
-              tx.bOMVersion.findMany({
-                where: { productId: input.productId },
-                select: { id: true, version: true, status: true },
-              }),
-              tx.routing.findMany({
-                where: { productId: input.productId },
-                select: { id: true, code: true, status: true },
-              }),
-            ]);
+          // Queries run sequentially (not Promise.all) because an interactive
+          // transaction owns a single connection; concurrent queries on the
+          // same tx are deprecated and log noise in some drivers.
+          const product = await tx.product.findUnique({ where: { id: input.productId } });
+          const bomVersion = await tx.bOMVersion.findUnique({
+            where: { id: input.bomVersionId },
+            include: { items: { orderBy: { componentName: "asc" } } },
+          });
+          const routing = await tx.routing.findUnique({
+            where: { id: input.routingId },
+            include: { operations: { orderBy: { sequence: "asc" } } },
+          });
+          const line = await tx.line.findUnique({
+            where: { id: input.lineId },
+            include: { stations: true },
+          });
+          const identifierRanges = await tx.identifierRange.findMany({
+            where: { productId: input.productId },
+            orderBy: { startNumber: "asc" },
+          });
+          const inventoryMappings = await tx.productInventoryMapping.findMany({
+            where: { productId: input.productId },
+            include: { inventoryItem: true },
+          });
+          const productBoms = await tx.bOMVersion.findMany({
+            where: { productId: input.productId },
+            select: { id: true, version: true, status: true },
+          });
+          const productRoutings = await tx.routing.findMany({
+            where: { productId: input.productId },
+            select: { id: true, code: true, status: true },
+          });
 
           const opStationIds = [
             ...new Set(
@@ -71,24 +71,24 @@ export class PrismaReadinessContextLoader implements ReadinessContextLoader {
           const lineStationIds = (line?.stations ?? []).map((s) => s.id);
           const stationIds = [...new Set([...opStationIds, ...lineStationIds])];
 
-          const [stations, operatorAssignments, workInstructions] =
-            await Promise.all([
-              stationIds.length > 0
-                ? tx.station.findMany({ where: { id: { in: stationIds } } })
-                : Promise.resolve<never[]>([]),
-              stationIds.length > 0
-                ? tx.operatorStationAssignment.findMany({
-                    where: { stationId: { in: stationIds } },
-                    include: { operator: true },
-                  })
-                : Promise.resolve<never[]>([]),
-              opIds.length > 0
-                ? tx.workInstruction.findMany({
-                    where: { routingOperationId: { in: opIds } },
-                    orderBy: [{ routingOperationId: "asc" }, { version: "desc" }],
-                  })
-                : Promise.resolve<never[]>([]),
-            ]);
+          const stations =
+            stationIds.length > 0
+              ? await tx.station.findMany({ where: { id: { in: stationIds } } })
+              : [];
+          const operatorAssignments =
+            stationIds.length > 0
+              ? await tx.operatorStationAssignment.findMany({
+                  where: { stationId: { in: stationIds } },
+                  include: { operator: true },
+                })
+              : [];
+          const workInstructions =
+            opIds.length > 0
+              ? await tx.workInstruction.findMany({
+                  where: { routingOperationId: { in: opIds } },
+                  orderBy: [{ routingOperationId: "asc" }, { version: "desc" }],
+                })
+              : [];
 
           // Resolve the line reference on each station (for messages only).
           const stationLineIds = [

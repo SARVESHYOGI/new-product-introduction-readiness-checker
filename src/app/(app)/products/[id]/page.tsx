@@ -59,7 +59,7 @@ export default function ProductDetailPage() {
               variant={isConfigured ? "success" : "danger"}
               className="ml-2"
             >
-              {isConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+              {isConfigured ? "CHECKABLE" : "NOT CHECKABLE"}
             </Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -71,7 +71,8 @@ export default function ProductDetailPage() {
               className="mt-3 max-w-2xl rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger"
             >
               This product is missing {missingLabel}. It cannot be checked for production
-              readiness until that is configured, and it must never be reported as ready.
+              readiness until it has an active BOM version with required components and an
+              active routing with operations, and it must never be reported as ready.
             </p>
           ) : null}
         </div>

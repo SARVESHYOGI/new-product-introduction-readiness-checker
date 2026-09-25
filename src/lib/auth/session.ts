@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db/prisma";
+import { SESSION_COOKIE } from "@/lib/auth/constants";
 import type { User } from "@/generated/prisma/client";
 
-export const SESSION_COOKIE = "npi_session";
+export { SESSION_COOKIE };
 
 const SESSION_TTL_MS = (Number(process.env.SESSION_TTL_DAYS ?? 7) || 7) * 24 * 60 * 60 * 1000;
 

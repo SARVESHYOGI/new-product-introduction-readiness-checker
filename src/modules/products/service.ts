@@ -12,18 +12,34 @@ import { recordAudit } from "@/lib/audit";
 import type { ProductCreateInput, ProductUpdateInput } from "@/lib/validation/schemas";
 
 /**
- * Configuration pieces a product needs before a readiness check can even be
- * requested. The order is the remediation order used by the UI.
+ * Gaps in the configuration a product needs before a readiness check can even
+ * be requested. The order is the remediation order used by the UI.
+ *
+ * Status-aware on purpose: a product whose only BOM/routing is DRAFT (or whose
+ * ACTIVE BOM/routing is empty) is NOT checkable, even though rows exist. The
+ * count-vs-capability distinction matters because the readiness engine is the
+ * authority on* readiness*, but the editor must not label a DRAFT-only product
+ * "configured" or let a user run a check that is guaranteed to fail on
+ * configuration.
  */
-export type ConfigurationGap = "BOM" | "ROUTING";
+export type ConfigurationGap =
+  | "ACTIVE_BOM"
+  | "BOM_REQUIRED_ITEMS"
+  | "ACTIVE_ROUTING"
+  | "ROUTING_OPERATIONS";
 
 export interface ProductConfiguration {
   hasBom: boolean;
   hasRouting: boolean;
+  /** True when at least one ACTIVE BOM version has a required component. */
+  activeBomWithRequiredItems: boolean;
+  /** True when at least one ACTIVE routing has an operation. */
+  activeRoutingWithOperations: boolean;
   /**
-   * True when the product has both a BOM version and a routing. A product that
-   * exists in the catalog is NOT the same thing as a product that can be
-   * checked — an unconfigured product can never produce a READY result.
+   * True when the product has both an ACTIVE, non-empty BOM version and an
+   * ACTIVE, non-empty routing. This gates the UI's run button and is an
+   * advisor; the readiness engine remains the authority on readiness and still
+   * evaluates every existing-and-owned tuple, DRAFT or not, fail-safe.
    */
   isConfigured: boolean;
   /** What is still missing, in remediation order. Empty when configured. */
@@ -34,16 +50,33 @@ export interface ProductConfiguration {
  * Pure derivation of the configuration status. Kept separate (and dependency
  * free) so the rule is unit-testable and so the UI never has to re-derive it.
  */
-export function deriveConfiguration(counts: {
+export function deriveConfiguration(state: {
   bomVersions: number;
   routings: number;
+  activeBoms: number;
+  activeBomsWithRequiredItems: number;
+  activeRoutings: number;
+  activeRoutingsWithOperations: number;
 }): ProductConfiguration {
   const missing: ConfigurationGap[] = [];
-  if (counts.bomVersions < 1) missing.push("BOM");
-  if (counts.routings < 1) missing.push("ROUTING");
+
+  if (state.bomVersions < 1 || state.activeBoms < 1) {
+    missing.push("ACTIVE_BOM");
+  } else if (state.activeBomsWithRequiredItems < 1) {
+    missing.push("BOM_REQUIRED_ITEMS");
+  }
+
+  if (state.routings < 1 || state.activeRoutings < 1) {
+    missing.push("ACTIVE_ROUTING");
+  } else if (state.activeRoutingsWithOperations < 1) {
+    missing.push("ROUTING_OPERATIONS");
+  }
+
   return {
-    hasBom: counts.bomVersions > 0,
-    hasRouting: counts.routings > 0,
+    hasBom: state.bomVersions > 0,
+    hasRouting: state.routings > 0,
+    activeBomWithRequiredItems: state.activeBomsWithRequiredItems > 0,
+    activeRoutingWithOperations: state.activeRoutingsWithOperations > 0,
     isConfigured: missing.length === 0,
     missing,
   };
@@ -56,9 +89,23 @@ export interface ProductListItem extends Product {
   lastCheckScore: number | null;
 }
 
-const listItemSelect = {
+const listItemInclude = {
   _count: { select: { bomVersions: true, routings: true, readinessChecks: true } },
+  // Status-aware derivation needs to know whether ACTIVE versions exist and
+  // whether they are non-empty, not just how many rows exist in total.
+  bomVersions: {
+    where: { status: "ACTIVE" },
+    select: { _count: { select: { items: { where: { isRequired: true } } } } },
+  },
+  routings: {
+    where: { status: "ACTIVE" },
+    select: { _count: { select: { operations: true } } },
+  },
 } as const;
+
+type ProductWithConfigurationLinks = Prisma.ProductGetPayload<{
+  include: typeof listItemInclude;
+}>;
 
 export class ProductService {
   constructor(private readonly client: PrismaClient = defaultClient) {}
@@ -81,7 +128,7 @@ export class ProductService {
             }
           : {}),
       },
-      include: listItemSelect,
+      include: listItemInclude,
       orderBy: [{ updatedAt: "desc" }],
       take: limit,
     });
@@ -105,7 +152,7 @@ export class ProductService {
   async getById(id: string): Promise<ProductListItem | null> {
     const product = await this.client.product.findUnique({
       where: { id },
-      include: listItemSelect,
+      include: listItemInclude,
     });
     if (!product) return null;
 
@@ -118,16 +165,31 @@ export class ProductService {
   }
 
   private toListItem(
-    product: Product & {
-      _count: { bomVersions: number; routings: number; readinessChecks: number };
-    },
+    product: ProductWithConfigurationLinks,
     latest?: { productId: string; status: ReadinessCheckStatus; score: number } | null
   ): ProductListItem {
+    const activeBoms = product.bomVersions;
+    const activeRoutings = product.routings;
     return {
-      ...product,
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      description: product.description,
+      status: product.status,
+      createdAt: product.createdAt,
+      updatedAt: product.updatedAt,
+      _count: {
+        bomVersions: product._count.bomVersions,
+        routings: product._count.routings,
+        readinessChecks: product._count.readinessChecks,
+      },
       configuration: deriveConfiguration({
         bomVersions: product._count.bomVersions,
         routings: product._count.routings,
+        activeBoms: activeBoms.length,
+        activeBomsWithRequiredItems: activeBoms.filter((b) => b._count.items > 0).length,
+        activeRoutings: activeRoutings.length,
+        activeRoutingsWithOperations: activeRoutings.filter((r) => r._count.operations > 0).length,
       }),
       lastCheckStatus: latest?.status ?? null,
       lastCheckScore: latest?.score ?? null,
@@ -196,63 +258,6 @@ export class ProductService {
           },
         });
         return product;
-      })
-    );
-  }
-
-  /**
-   * A product can only be deleted while it is still a draft with no dependent
-   * configuration and no readiness history. Once a check has run against it,
-   * `ReadinessCheck` uses `onDelete: Restrict`, so deletion is impossible by
-   * design — set it to INACTIVE instead so the immutable history stays readable.
-   */
-  async delete(id: string, actorId: string): Promise<void> {
-    return withMappedErrors("product", () =>
-      this.client.$transaction(async (tx) => {
-        const existing = await tx.product.findUnique({
-          where: { id },
-          include: {
-            _count: {
-              select: {
-                readinessChecks: true,
-                bomVersions: true,
-                routings: true,
-                identifierRanges: true,
-                inventoryMappings: true,
-              },
-            },
-          },
-        });
-        if (!existing) {
-          throw ApiError.notFound("NOT_FOUND", `Product ${id} was not found.`);
-        }
-
-        const { readinessChecks, bomVersions, routings, identifierRanges, inventoryMappings } =
-          existing._count;
-        const blockers: string[] = [];
-        if (readinessChecks > 0) {
-          blockers.push(`${readinessChecks} readiness check(s)`);
-        }
-        if (bomVersions > 0) blockers.push(`${bomVersions} BOM version(s)`);
-        if (routings > 0) blockers.push(`${routings} routing(s)`);
-        if (identifierRanges > 0) blockers.push(`${identifierRanges} identifier range(s)`);
-        if (inventoryMappings > 0) blockers.push(`${inventoryMappings} inventory mapping(s)`);
-
-        if (blockers.length > 0) {
-          throw ApiError.conflict(
-            "PRODUCT_HAS_DEPENDENTS",
-            `${existing.name} cannot be deleted because it still has ${blockers.join(", ")}. Remove the dependent configuration first, or set the product to INACTIVE to keep its readiness history.`
-          );
-        }
-
-        await tx.product.delete({ where: { id } });
-        await recordAudit(tx, {
-          actorId,
-          action: "product.delete",
-          entityType: "Product",
-          entityId: id,
-          metadata: { sku: existing.sku, name: existing.name },
-        });
       })
     );
   }

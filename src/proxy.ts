@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { SESSION_COOKIE } from "@/lib/auth/session";
+import { SESSION_COOKIE } from "@/lib/auth/constants";
 
 /**
  * Optimistic, network-boundary auth gate (Next.js 16 "proxy" — replaces the

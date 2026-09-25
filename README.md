@@ -28,7 +28,7 @@ A web application that:
 4. Produces an immutable, persisted result: status, score, per-category status, per-check detail, affected entities, remediation, root blockers, and dependency impacts.
 5. Exposes a clean REST API and a polished enterprise UI with history and blocker drill-down.
 
-The system is **fail-safe**: if required production configuration cannot be verified (database error, missing data, contradictory data, timeout, corrupt configuration), the result is **BLOCKED** — never READY. It is also **honest about the difference between "exists" and "ready"**: a product with no BOM or no routing is presented as *not configurable* and cannot produce a readiness verdict at all.
+The system is **fail-safe**: if required production configuration cannot be verified (database error, missing data, contradictory data, timeout, corrupt configuration), the result is **BLOCKED** — never READY. It is also **honest about the difference between "exists" and "ready"**: a product whose only BOM/routing is DRAFT (or whose ACTIVE BOM/routing is empty) is presented as *not checkable* and cannot produce a readiness verdict at all — "rows exist" is not the same as "can be checked".
 
 ---
 
@@ -45,7 +45,8 @@ src/
     auth/               # password hashing, DB-backed sessions, role guards
     client/             # typed API client + TanStack Query hooks
     configuration.ts    # shared, presentational-only configuration gap labels
-    db/                 # Prisma client singleton
+    db/                 # Prisma client (lazy singleton) + explicit PoolConfig/TLS parsing
+    infrastructure.ts   # driver-error → stable 503 code classification
     logging/            # structured logger (requestId, action, duration)
     security/           # rate limiting, headers
     validation/         # shared Zod schemas
@@ -66,7 +67,7 @@ src/
     seed.ts             # 5 configured scenarios + 1 unconfigured product, self-verifying
   tests/
     unit/               # every rule + engine + scoring + dependency analyzer + services
-    integration/        # POST /api/readiness/check against seeded PostgreSQL
+    integration/        # readiness API + auth API + configuration-write lifecycle/RBAC tests against seeded PostgreSQL
     e2e/                # Playwright critical flows
 ```
 
@@ -76,6 +77,7 @@ src/
 - **Database queries never appear in UI components** — the service layer and `lib/db` own persistence.
 - **The engine is independently testable** — it depends only on a `ReadinessContextLoader` interface; rules are unit-tested with in-memory loaders and never touch the database.
 - **Readiness results are immutable.** Persisted in a transaction; if configuration changes later, engineers run a *new* check. History is never rewritten.
+- **The Edge boundary stays clean.** `src/proxy.ts` (middleware) imports the session cookie name from `lib/auth/constants`, a dependency-free module, so the database stack is never bundled into the Edge runtime.
 
 ---
 
@@ -104,13 +106,12 @@ Readiness (auditable, immutable results): `ReadinessCheck`, `ReadinessResult`.
 
 Supporting: `AuditLog`, `User` (ADMIN / ENGINEER / VIEWER), `Session`.
 
-**Constraints enforce data integrity** (Safety Rule 6):
+**Constraints enforce data integrity** (Safety Rule 6), while deliberately keeping *conflicting* configuration representable so the readiness engine (not the storage layer) is the authority:
 
-- Unique `(routingId, sequence)` on routing operations — duplicate sequences are impossible at the storage layer, so `ROUTING_SEQUENCE_DUPLICATE` is defence in depth.
-- Unique `(productId, version)` on BOM versions; unique `(productId, code)` on routings; unique `sku` on products and inventory items.
-- Unique `(bomVersionId, componentSku)` on BOM items — duplicate component records cannot be stored.
-- Unique `(productId, prefix)` on identifier ranges; unique `(productId, mappingType)` on inventory mappings — a product can have **at most one** output mapping in the database, which is what makes the duplicate-active-mapping scenario (`INVENTORY_SINGLE_ACTIVE`) a true integrity signal rather than a UI check.
-- Unique `(routingOperationId, version)` on work instructions; unique `employeeCode` on operators.
+- Unique `(productId, version)` on BOM versions; unique `(routingId, sequence)` on routing operations — duplicate sequences are impossible at the storage layer, so `ROUTING_SEQUENCE_DUPLICATE` is defence in depth.
+- Unique `sku` on products and inventory items; unique `code` on lines; unique `employeeCode` on operators; unique `(bomVersionId, componentSku)` on BOM items — duplicate component records cannot be stored.
+- Unique `(routingOperationId, version)` on work instructions.
+- **Deliberately relaxed (migration `20260925130000_relax_configuration_uniqueness`):** routings are no longer unique per `(productId, code)`, identifier ranges are no longer unique per `(productId, prefix)`, and inventory mappings are no longer unique per `(productId, mappingType)`. This makes duplicate-active configuration (two active BOMs, same routing code twice, overlapping ranges, two output mappings) *storable and detectable* by the readiness rules (Safety Rule 3) instead of being silently rejected at write time. The write endpoints still tell the engineer about the conflict — see [Configuration Lifecycle & Advisories](#configuration-lifecycle--advisories) — but only the engine decides readiness.
 - Foreign keys throughout with intentional `onDelete` behavior: `Cascade` for configuration that cannot exist without its parent, `Restrict` for configuration that is referenced by an immutable audit record (`ReadinessCheck` → product/BOM/routing/line).
 - Indexes on every lookup/filter column used by the readiness loader (`(productId, status)`, `(stationId, status)`, `(readinessCheckId)`, `(productId, createdAt)`, …).
 
@@ -206,7 +207,7 @@ Root blockers are re-derived deterministically from the persisted results on eve
 
 ## API
 
-All endpoints require a session (except `POST /api/auth/login`). Server-side role checks apply on every request; frontend role checks are only cosmetic. Zod validates every write payload; IDs are validated against the database — the API rejects IDs that do not belong together.
+All endpoints require a session (except `POST /api/auth/login`). Server-side role checks apply on every request; frontend role checks are only cosmetic. Zod validates every write payload; IDs are validated against the database — the API rejects IDs that do not belong together. Every write returns the created/updated entity *and* any **advisory conflicts** it introduced (see [Configuration Lifecycle & Advisories](#configuration-lifecycle--advisories)).
 
 ### Auth
 
@@ -216,18 +217,60 @@ All endpoints require a session (except `POST /api/auth/login`). Server-side rol
 | `POST` | `/api/auth/logout` | Destroy session |
 | `GET` | `/api/auth/me` | Current user |
 
-### Products / config
+### Read / browse (any signed-in user)
 
 | Method | Path | Action |
 | --- | --- | --- |
-| `GET` | `/api/products` | List products |
-| `GET` | `/api/products/:id` | Product detail |
+| `GET` | `/api/products` | List products (optional `status` filter; unknown values → 400) |
+| `GET` | `/api/products/:id` | Product detail (incl. derived configuration projection) |
 | `GET` | `/api/products/:id/boms` | BOM versions for product |
 | `GET` | `/api/boms/:id` | BOM with items |
 | `GET` | `/api/products/:id/routings` | Routings for product |
 | `GET` | `/api/routings/:id` | Routing with operations + stations |
 | `GET` | `/api/lines` | List production lines |
 | `GET` | `/api/lines/:id` | Line with stations |
+| `GET` | `/api/stations`, `/api/stations/:id` | Stations |
+| `GET` | `/api/operators`, `/api/operators/:id` | Operators |
+| `GET` | `/api/inventory-items`, `/api/inventory-items/:id` | Inventory items |
+| `GET` | `/api/work-instructions` | Work-instruction versions (filterable by `productId` / `routingOperationId`) |
+| `GET` | `/api/routing-operations/:operationId/work-instructions` | Work instructions for one operation |
+| `GET` | `/api/products/:id/inventory` | Product inventory: identifier ranges + output mappings |
+| `GET` | `/api/products/:id/inventory/ranges`, `…/ranges/:rangeId` | Identifier ranges (detail also returns overlap advisories) |
+| `GET` | `/api/products/:id/inventory/mappings` | Output inventory mappings |
+
+### Configuration writes (ADMIN only)
+
+Every write below requires `ADMIN` (server-enforced at the guard; `ENGINEER`/`VIEWER`/anonymous get `401`/`403` before the body is parsed). Unknown keys and malformed payloads are rejected with `400 VALIDATION_ERROR` (schemas are `.strict()`).
+
+| Method | Path | Action |
+| --- | --- | --- |
+| `POST` | `/api/products` | Create product |
+| `PATCH` | `/api/products/:id` | Update product |
+| `POST` | `/api/products/:id/boms` | Create BOM version (starts `DRAFT`) |
+| `PATCH` | `/api/boms/:id` | Update BOM version (status transition / effective window) |
+| `POST` | `/api/boms/:id/items` | Add BOM item |
+| `PATCH` / `DELETE` | `/api/boms/:id/items/:itemId` | Update / remove BOM item |
+| `POST` | `/api/products/:id/routings` | Create routing (starts `DRAFT`) |
+| `PATCH` | `/api/routings/:id` | Update routing |
+| `POST` | `/api/routings/:id/operations` | Add routing operation |
+| `PATCH` / `DELETE` | `/api/routings/:id/operations/:operationId` | Update / remove routing operation |
+| `POST` | `/api/routing-operations/:operationId/work-instructions` | Create WI version (an `ACTIVE` creation supersedes the current active one) |
+| `PATCH` | `/api/work-instructions/:id` | Update WI (DRAFT editable; published content frozen) |
+| `DELETE` | `/api/work-instructions/:id` | Delete WI (**DRAFT only**) |
+| `POST` | `/api/lines` | Create production line |
+| `PATCH` | `/api/lines/:id` | Update line |
+| `POST` | `/api/stations` | Create station |
+| `PATCH` | `/api/stations/:id` | Update station (ACTIVE / INACTIVE / MAINTENANCE) |
+| `POST` | `/api/operators` | Create operator |
+| `PATCH` | `/api/operators/:id` | Update operator |
+| `POST` | `/api/operators/:id/assignments` | Create operator-station assignment |
+| `PATCH` / `DELETE` | `/api/operators/:id/assignments/:assignmentId` | Update / remove assignment |
+| `POST` | `/api/products/:id/inventory/ranges` | Create identifier range |
+| `PATCH` / `DELETE` | `/api/products/:id/inventory/ranges/:rangeId` | Update / remove identifier range |
+| `POST` | `/api/products/:id/inventory/mappings` | Create output inventory mapping |
+| `PATCH` / `DELETE` | `/api/products/:id/inventory/mappings/:mappingId` | Update / remove output mapping |
+| `POST` | `/api/inventory-items` | Create inventory item |
+| `PATCH` | `/api/inventory-items/:id` | Update inventory item |
 
 ### Readiness
 
@@ -253,7 +296,7 @@ All endpoints require a session (except `POST /api/auth/login`). Server-side rol
 }
 ```
 
-Rejected with `400` when fields are missing/malformed, or when the BOM/routing does not belong to the product or the line is inconsistent with the routing's stations.
+Rejected with `400` when fields are missing/malformed, when the BOM/routing does not exist or does not belong to the selected product, or when a routing operation references a station it cannot (missing/belonging to a different line). A *line* that does not match the routing's stations is **not** rejected — it is exactly the kind of contradictory configuration the engine reports deterministically as a blocking failure.
 
 **Response:**
 
@@ -290,6 +333,23 @@ Rejected with `400` when fields are missing/malformed, or when the BOM/routing d
 
 ---
 
+## Configuration Lifecycle & Advisories
+
+Versioned configuration (BOM versions, routings, work instructions) follows one shared lifecycle, enforced server-side with a stable error code:
+
+| Current | Legal next states | Notes |
+| --- | --- | --- |
+| `DRAFT` | `DRAFT`, `ACTIVE`, `OBSOLETE` | Freely editable; publish or discard |
+| `ACTIVE` | `ACTIVE`, `OBSOLETE` | Published; the only legal move is superseding with `OBSOLETE` |
+| `OBSOLETE` | `OBSOLETE` | Permanent history — never reactivated |
+
+- `ACTIVE → DRAFT` is **rejected** (`INVALID_STATUS_TRANSITION` / `INVALID_INSTRUCTION_STATUS_TRANSITION`): silently un-publishing a version operators may already be trained against would rewrite history with no trace.
+- **Published configuration is immutable.** Once a BOM version is published its effective window is frozen (`PUBLISHED_BOM_IMMUTABLE`); a published routing's version label is identity and cannot be renamed (`PUBLISHED_ROUTING_IMMUTABLE`); ACTIVE/OBSOLETE work-instruction content is frozen (`ACTIVE_INSTRUCTION_IMMUTABLE`). Obsoleted BOM items and routing operations become read-only (`OBSOLETE_BOM_IMMUTABLE`, `OBSOLETE_ROUTING_IMMUTABLE`). Re-saving the same values (no-op) stays allowed. Changes always go through a *new version*: publish a replacement and supersede the old one — done transactionally, so two simultaneously active versions can never be created through the editor (Safety Rule 3).
+- **Deletes are restricted.** Only DRAFT work instructions (plus BOM items, routing operations, operator assignments, identifier ranges, mappings) can be deleted. Shared resources change status instead, so audit history stays truthful.
+- **Advisory conflicts, not silent rejection.** Writes that *represent* configuration conflicts — a second active BOM version, overlapping identifier ranges, a second output mapping, a counter regression — are persisted and surfaced as **advisories** (returned with the write response and stored as `AdvisoryConflict` rows) so the editor can explain them. They never reject the write and never decide readiness: only the readiness engine computes `READY` / `NOT_READY` / `BLOCKED`. A DRAFT or empty BOM/routing tuple is never rejected either — the engine evaluates it fail-safely (it can never come out `READY`); the UI simply does not offer uncheckable options.
+
+---
+
 ## Security
 
 - **Authentication:** database-backed sessions. The cookie carries a random 256-bit token; only its **SHA-256 hash** is persisted, so a leaked database cannot be used to impersonate users. Cookie is `HttpOnly`, `SameSite=Lax`, `Secure` in production. (Auth is intentionally self-contained for the hackathon — documented, not delegated to an external IdP.)
@@ -302,6 +362,12 @@ Rejected with `400` when fields are missing/malformed, or when the BOM/routing d
 ## Observability
 
 Structured, safe logging via `lib/logging/logger` (JSON in production): every API request logs `requestId`, `timestamp`, `action`, `endpoint`, `duration`, `result`, `errorCode`. Readiness checks log `checkId`, `duration`, `status`. **No sensitive data is logged** (no passwords, tokens, or PII). All API routes are wrapped with `withRequestLog`.
+
+Infrastructure faults log a single dedicated event carrying only a fixed code and a safe driver `reason` token — never the driver's message, which can embed the connection string:
+
+```json
+{"level":"error","event":"infrastructure_error","code":"DATABASE_UNAVAILABLE","reason":"P1001"}
+```
 
 ---
 
@@ -324,9 +390,11 @@ npm run db:seed             # prisma db seed      (5 configured scenarios + 1 un
 For the integration tests, point `TEST_DATABASE_URL` at a second database (e.g. `npi_test`) and run:
 
 ```bash
-npm run db:reset -- --schema=prisma/schema.prisma  # optionally reset
+npm run db:test:setup   # create npi_test if missing → migrate deploy → seed (never touches the dev DB)
 npm run test
 ```
+
+`db:test:setup` creates the test database on the same server, applies migrations, and seeds it — the test suite then wipes and reseeds that dedicated DB itself, so it is fully self-contained and repeatable.
 
 > `npm run db:reset` runs `prisma migrate reset --force` against the configured `DATABASE_URL` and re-runs the seed, so it fully recreates the dev environment.
 
@@ -337,9 +405,35 @@ DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/npi_dev   # app + Prisma 
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/npi_test  # vitest integration suite
 AUTH_SECRET=replace-with-a-random-32-byte-hex-string             # password pepper + session token derivation
 SESSION_TTL_DAYS=7                                               # session lifetime (default 7)
+
+# Optional connection tuning (see "Database connection" below)
+DATABASE_SSL=require            # disable | require | verify-ca | verify-full
+DATABASE_POOL_MAX=5             # per instance; 1 automatically when ?pgbouncer=true
+DATABASE_CONNECTION_TIMEOUT_MS=8000
 ```
 
 Generate a secret with `openssl rand -hex 32`. **Never commit `.env`.**
+
+`DATABASE_URL` and `AUTH_SECRET` are the only two values a deployment must set;
+`SESSION_TTL_DAYS` and the three tuning variables all have safe defaults.
+
+### Database connection
+
+`src/lib/db/config.ts` parses `DATABASE_URL` and hands Prisma's `pg` adapter an
+**explicit** `PoolConfig` (host, port, database, user, password, `ssl`, pool
+size, timeouts) instead of a raw connection string.
+
+This is deliberate. Prisma 7's `pg` driver adapter does not reliably apply the
+`sslmode` query parameter when it is given a connection string, so a remote
+database that requires TLS — exactly the Vercel + Neon/Supabase case — can fail
+to connect even though the URL is correct. Passing explicit fields sidesteps
+that. TLS defaults to `require` for any non-local host and `disable` for
+`localhost`; `verify-ca` / `verify-full` turn on certificate verification for
+providers whose CA is in the runtime trust store.
+
+Pool defaults are sized for serverless (5 connections per instance, dropping to
+1 behind a transaction pooler such as PgBouncer) with an 8s connection timeout,
+so a stalled database fails fast with a `503` instead of holding a request open.
 
 ---
 
@@ -359,9 +453,9 @@ Open the app, sign in (see demo credentials), and use **Run Check**:
 
 The readiness page disables the button while a check is running and shows staged progress (Validating BOM… Validating Routing… Validating Stations… Validating Operators… Analyzing blockers…).
 
-If the selected product is missing a BOM or a routing, the page says so inline next to the affected selector, shows a per-product callout naming the missing pieces, and disables **Run Readiness Check** with a hint linked via `aria-describedby`. Selections are always filtered by the chosen product, so the dropdowns can never offer a BOM or routing from a different product.
+If the selected product is missing an **active** BOM or routing (or its active BOM/routing is empty), the page says so inline next to the affected selector, shows a per-product callout naming the missing pieces, and disables **Run Readiness Check** with a hint linked via `aria-describedby`. Selections are always filtered by the chosen product, and only *checkable* BOMs and routings are offered, so the dropdowns can never offer a BOM or routing from a different product.
 
-On the **Products** page, ADMIN users get an **Add product** button (the same role the server enforces on `POST /api/products`). The dialog validates with the *shared* Zod schema, defaults to `DRAFT` status, and the new product appears in the catalog and dashboard immediately after creation. A newly added product is immediately badged `NOT CONFIGURED` — creating a product does not create its BOM, routing or line configuration.
+On the **Products** page, ADMIN users get an **Add product** button (the same role the server enforces on `POST /api/products`). The dialog validates with the *shared* Zod schema, defaults to `DRAFT` status, and the new product appears in the catalog and dashboard immediately after creation. A newly added product is immediately badged `NOT CHECKABLE` — creating a product does not create its BOM, routing or line configuration.
 
 ### Demo credentials
 
@@ -373,25 +467,136 @@ On the **Products** page, ADMIN users get an **Add product** button (the same ro
 
 ---
 
+## Deployment
+
+The app is a standard Next.js + Prisma deployment (e.g. Vercel + Neon/Supabase PostgreSQL); deployment is optional and never required for local development.
+
+### 1. Provision the database
+
+Create a managed PostgreSQL database and copy its **pooled** connection string.
+Vercel functions are short-lived and scale horizontally, so a pooler is strongly
+recommended — append `?pgbouncer=true` (or use the provider's `-pooler` host) so
+the app opens a single connection per instance instead of five.
+
+### 2. Set the environment variables
+
+Set these in the Vercel project for **every** environment you deploy
+(Production *and* Preview), via Project Settings → Environment Variables:
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | yes | Pooled PostgreSQL URL. Must point at the same environment you deploy to. |
+| `AUTH_SECRET` | yes | `openssl rand -hex 32`. **Changing it invalidates every existing password hash.** |
+| `SESSION_TTL_DAYS` | no | Defaults to `7`. |
+| `DATABASE_SSL` | no | Defaults to `require` for remote hosts. Set `verify-full` only if the CA is trusted. |
+| `DATABASE_POOL_MAX` | no | Defaults to `5`, or `1` with `?pgbouncer=true`. |
+
+### 3. Apply migrations
+
+`npm run build` runs `prisma generate` (types only) — it does **not** create
+tables. A fresh production database must be migrated once:
+
+```bash
+DATABASE_URL="<production-pooled-url>" npx prisma migrate deploy
+```
+
+`migrate deploy` only applies pending migrations; it never drops data, so it is
+safe to re-run and is the correct command for CI. There is no `vercel.json` that
+runs this automatically, so run it deliberately as a release step.
+
+### 4. Create an admin user
+
+The seed (`npm run db:seed`) is **destructive** — it deletes every existing row
+before inserting the demo scenarios. Never run it against a shared or
+production database. For a real deployment, insert an admin directly instead:
+
+```sql
+INSERT INTO "User" (id, email, name, role, "isActive", "passwordHash", "createdAt", "updatedAt")
+VALUES (gen_random_uuid()::text, 'you@example.com', 'Owner', 'ADMIN', true,
+        '<scrypt hash>', now(), now());
+```
+
+Generate the hash with the application helper, never by hand:
+
+```bash
+npx tsx -e "import {hashPassword} from './src/lib/auth/password';
+           hashPassword('choose-a-strong-password').then(h => console.log(h));"
+```
+
+### 5. Deploy and verify
+
+Deploy with framework preset "Next.js" (`npm run build`). Then confirm sign-in
+works and that `POST /api/auth/login` answers with a real status code.
+
+### Diagnosing a `500` on `/api/auth/login`
+
+`500 INTERNAL_ERROR` from this endpoint is almost always a database or
+configuration fault, and the API now names it explicitly. `src/lib/infrastructure.ts`
+maps driver failures onto a fixed set of codes, returned as `503` with no
+connection string, host, SQL, or stack trace:
+
+| Response code | Meaning | Fix |
+| --- | --- | --- |
+| `DATABASE_NOT_CONFIGURED` | `DATABASE_URL` missing or malformed | Set it in Vercel; redeploy |
+| `DATABASE_UNAVAILABLE` | DNS/TCP/TLS failure, or pool exhausted | Check the pooled host, firewall, `DATABASE_SSL` |
+| `DATABASE_AUTHENTICATION_FAILED` | Server rejected the user/password | Rotate the database credentials in the URL |
+| `DATABASE_SCHEMA_NOT_READY` | Tables missing — migrations never ran | `npx prisma migrate deploy` |
+| `AUTH_NOT_CONFIGURED` | `AUTH_SECRET` missing | Set it; reseed passwords if it changed |
+| `INTERNAL_ERROR` (500) | A real application bug | Read the function log |
+
+Each of these also writes one structured log line with a safe `reason` token
+(`P1001`, `28P01`, `P2021`, …) and no driver text — grep the Vercel function log
+for `"event":"infrastructure_error"`:
+
+```json
+{"level":"error","event":"infrastructure_error","code":"DATABASE_SCHEMA_NOT_READY","reason":"P2021"}
+```
+
+To confirm the production schema without touching data:
+
+```sql
+SELECT to_regclass('"User"'), to_regclass('"Session"');
+SELECT migration_name, finished_at FROM "_prisma_migrations" ORDER BY started_at;
+```
+
+---
+
+## Error Handling
+
+`lib/api/http.ts` shapes every API response through `fail()`:
+
+- Deliberate `ApiError`s (400/401/403/404/409/413/429) pass through unchanged.
+- Infrastructure faults become a `503` with a stable code (table above).
+- Anything else becomes a `500 INTERNAL_ERROR` with a fixed message in
+  production — never a driver message, stack trace, or internal path.
+
+The shared Prisma client is created on first use rather than at module import,
+so a missing `DATABASE_URL` fails *inside* the request and is classified, rather
+than crashing the module graph and producing an opaque framework error.
+
+---
+
 ## Running Tests
 
 ```bash
 npm run lint          # ESLint
 npm run typecheck     # tsc --noEmit
-npm run test          # Vitest: 115 unit + integration + UI tests across 17 files (uses TEST_DATABASE_URL)
+npm run test          # Vitest: 217 unit + integration + UI tests across 21 files (uses TEST_DATABASE_URL)
 npm run test:e2e      # Playwright: 4 critical flows against dev server + seeded db
 npm run build         # production build
 ```
 
 **Test coverage:**
 
-- **Unit + UI tests:** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking, and a non-blocking FAIL no longer forces NOT_READY), dependency analysis (root vs impact dedup), remediation, serialization, product configuration derivation, readiness-service preflight fail-safe (a DB error during ownership validation persists a BLOCKED check instead of bypassing the engine), and the Add Product dialog (shared-schema validation, payload contract, server-error surfacing).
-- **Integration tests:** `POST /api/readiness/check` against a real seeded PostgreSQL database — verifies status, score, blockers, persistence, the exact outcome of all five seeded scenarios, rejection of an unconfigured product (400, never a persisted "ready" check), and the product-configuration projection. Auth is mocked at the session boundary.
+- **Unit + UI tests:** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives, the work-instruction latest-version warning), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking, and a non-blocking FAIL no longer forces NOT_READY), dependency analysis (root vs impact dedup), remediation, serialization, product configuration derivation (the status-aware four-gap contract), readiness-service preflight fail-safe (a DB error during ownership validation persists a BLOCKED check instead of bypassing the engine), and the Add Product dialog (shared-schema validation, payload contract, server-error surfacing).
+- **Integration tests (real seeded PostgreSQL):**
+  - `POST /api/readiness/check` — verifies status, score, blockers, persistence, the exact outcome of all five seeded scenarios, rejection of an unconfigured product (400, never a persisted "ready" check), and the product-configuration projection.
+  - Configuration writes — BOM/routing/WI lifecycle transitions (`INVALID_STATUS_TRANSITION`, `PUBLISHED_BOM_IMMUTABLE`, `PUBLISHED_ROUTING_IMMUTABLE`, `OBSOLETE_BOM_IMMUTABLE`, `OBSOLETE_ROUTING_IMMUTABLE`, `ACTIVE_INSTRUCTION_IMMUTABLE`), server-side RBAC (ENGINEER/VIEWER/anonymous → 401/403 before body parsing; ADMIN allowed), and strict schemas (unknown keys → `400 VALIDATION_ERROR`).
 - **E2E (Playwright):**
   1. ENGINEER logs in, selects a product/BOM/routing/line, runs a check, sees results (71%, NOT READY), opens a blocker, views remediation.
   2. Unauthenticated users are redirected to login.
   3. ADMIN creates a product through the Add product dialog (unique SKU per run; appears in the catalog), while the ENGINEER does not see the admin-only action.
-  4. An **unconfigured** product (`PS5`, no BOM, no routing) is badged `NOT CONFIGURED` in the catalog, shows exactly what is missing on its detail page, and cannot reach or run a check.
+  4. An **unconfigured** product (`PS5`, no BOM, no routing) is badged `NOT CHECKABLE` in the catalog, shows exactly what is missing on its detail page, and cannot reach or run a check.
 
   All E2E runs hit the real dev server and seeded demo DB, so server-side auth + role checks are exercised for real. The product created by test 3 is deleted in `afterAll`, so repeated runs leave the demo catalog at exactly the 6 seeded products.
 
@@ -408,13 +613,17 @@ The seed (`npm run db:seed`) builds **6 products** (5 configured + 1 deliberatel
 | Control Unit 2000 | `CTU-2000` | Missing operator assignments | **NOT_READY — 86%** (2 blockers) |
 | Display Module 4000 | `DPL-4000` | Inactive station on routing | **BLOCKED — 57%** (1 critical blocker) |
 | Power Supply 5000 | `PS-5000` | Conflicting config (2 active BOMs + overlapping identifier ranges) | **BLOCKED — 71%** (2 critical blockers) |
-| PlayStation 5 | `PS5` | *No BOM version, no routing* | **Not checkable** — badged `NOT CONFIGURED`, `Run check` disabled, and no readiness record can exist |
+| PlayStation 5 | `PS5` | *No BOM version, no routing* | **Not checkable** — badged `NOT CHECKABLE`, `Run check` disabled, and no readiness record can exist |
 
 If a seeded environment's outcome ever diverges from these expectations, the seed script fails loudly — the demo can never silently drift.
 
 ### Why an unconfigured product has no readiness record
 
-"Exists" ≠ "ready". `POST /api/readiness/check` **requires** a BOM version and a routing that both belong to the selected product, so an unconfigured product is rejected with a `400` before the engine ever runs. It is never persisted as a `BLOCKED` check either — a `BLOCKED` record would imply the configuration was checked and found unsafe, which is not what happened. The UI surfaces the same truth without a request: the catalog badges it `NOT CONFIGURED`, and the product detail, catalog and Run Check pages all state exactly which pieces are missing and why the check cannot be started.
+"Exists" ≠ "ready", and neither equals "checkable". `POST /api/readiness/check` **requires** a BOM version and a routing that both belong to the selected product, so an unconfigured product is rejected with a `400` before the engine ever runs. It is never persisted as a `BLOCKED` check either — a `BLOCKED` record would imply the configuration was checked and found unsafe, which is not what happened.
+
+Checkability is derived on the server from *four* status-aware gaps (`ProductService.deriveConfiguration`): the product needs an **active BOM**, an **active BOM with required components**, an **active routing**, and an **active routing with operations**. A product whose only BOM/routing is `DRAFT`, or whose active BOM is empty, is **not checkable** even though rows exist. The UI surfaces the same truth without a request: the catalog badges it `NOT CHECKABLE`, and the product detail, catalog and Run Check pages all state exactly which pieces are missing and why the check cannot be started.
+
+Deliberately, the API does *not* reject a DRAFT or empty tuple that is passed in explicitly — the readiness engine is the sole authority and evaluates it fail-safely (it can never come out `READY`). UI gating is an advisory for a better experience, not a rule.
 
 The fail-safe `BLOCKED` path is reserved for genuine *inability to verify* — a database/loader failure during the ownership preflight, or a context-load or rule crash. Those persist an `S1_VERIFICATION_FAILED` CRITICAL result rather than bypassing the engine.
 
@@ -427,8 +636,9 @@ The fail-safe `BLOCKED` path is reserved for genuine *inability to verify* — a
 - **Injectable clock + injectable loader** make rules deterministic and unit-testable without a database.
 - **Immutable results.** Historical checks are never rewritten; category statuses and root blockers are re-derived from stored results on read.
 - **Fail-safe by construction.** Status is *derived* from checks (CRITICAL → BLOCKED, any blocking → NOT_READY, else READY) rather than stored independently — a bug in persistence cannot accidentally produce READY.
-- **Configuration status is derived once, on the server.** `ProductService.deriveConfiguration()` turns raw BOM/routing/line counts into a typed `ProductConfiguration` (gaps + `isFullyConfigured`). The catalog, the product detail page and the Run Check page all render that one server projection, so no React component re-implements "is this product ready to be checked" and the three pages can never disagree.
-- **"Not configured" is a distinct state from "not ready".** It is surfaced explicitly (badge, named missing pieces, disabled action, `aria-disabled` + `aria-describedby`) instead of being folded into a rule failure, because there is nothing to score yet.
+- **Configuration status is derived once, on the server.** `ProductService.deriveConfiguration()` derives checkability from six status-aware counts (active/populated BOM and routing, plus history) into a typed `ProductConfiguration` (`hasBom`, `hasRouting`, `activeBomWithRequiredItems`, `activeRoutingWithOperations`, `missing` gaps, `isConfigured`). The catalog, the product detail page and the Run Check page all render that one server projection, so no React component re-implements "is this product ready to be checked" and the three pages can never disagree.
+- **"Not checkable" is a distinct state from "not ready".** It is surfaced explicitly (badge, named missing pieces, disabled action, `aria-disabled` + `aria-describedby`) instead of being folded into a rule failure, because there is nothing to score yet.
+- **The engine is the only authority on readiness, and the write layer never makes the call — or hides it.** Configuration writes persist whatever the editor asks (with the documented lifecycle/immutability guards) and return advisory conflicts when the result represents one. It is the deterministic engine that turns those advisories into fail/block decisions, and a ready-looking score can never override them.
 - **DB-backed sessions with hashed tokens** — a pragmatic, secure auth that needs no external provider.
 - **Server-side role enforcement** on every route handler; middleware provides an optimistic UX redirect, never an authorization decision.
 

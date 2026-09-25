@@ -1,19 +1,21 @@
-import { withRequestLog, ok, fail, readJsonBody } from "@/lib/api/http";
+import { withRequestLog, ok, fail, readJsonBody, enumQueryParam } from "@/lib/api/http";
 import { ApiError } from "@/lib/errors";
 import { requireUser, isAdmin } from "@/lib/auth/guard";
 import { parseOrThrow, productCreateSchema } from "@/lib/validation/schemas";
 import { ProductService } from "@/modules/products/service";
 
+const PRODUCT_STATUSES = ["DRAFT", "ACTIVE", "INACTIVE"] as const;
+
 export const GET = withRequestLog(async (req) => {
   await requireUser();
   const url = new URL(req.url);
   const search = url.searchParams.get("search") ?? undefined;
-  const status = url.searchParams.get("status") ?? undefined;
+  const status = enumQueryParam(req, "status", PRODUCT_STATUSES);
   const requestedLimit = Number(url.searchParams.get("limit") ?? 100);
 
   const products = await new ProductService().list({
     search,
-    status: (status as "DRAFT" | "ACTIVE" | "INACTIVE" | undefined) ?? undefined,
+    status,
     limit: Number.isFinite(requestedLimit)
       ? Math.min(Math.max(requestedLimit, 1), 200)
       : 100,

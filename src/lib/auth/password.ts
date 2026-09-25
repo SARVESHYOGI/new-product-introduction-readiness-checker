@@ -1,5 +1,6 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
+import { resolveAuthSecret } from "@/lib/auth/config";
 
 const scrypt = promisify(scryptCallback) as (
   password: string,
@@ -9,12 +10,13 @@ const scrypt = promisify(scryptCallback) as (
 
 const KEY_LENGTH = 64;
 
+/**
+ * The pepper is read on every call rather than cached at import time so that a
+ * misconfigured deployment fails as a classified 503 instead of crashing the
+ * module graph.
+ */
 function pepper(): string {
-  const value = process.env.AUTH_SECRET;
-  if (!value) {
-    throw new Error("AUTH_SECRET is not configured. Copy .env.example to .env and set AUTH_SECRET.");
-  }
-  return value;
+  return resolveAuthSecret();
 }
 
 /**

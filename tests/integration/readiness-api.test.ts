@@ -215,7 +215,7 @@ describe("POST /api/readiness/check (integration)", () => {
 
     expect(unconfigured).not.toBeNull();
     expect(unconfigured!.configuration.isConfigured).toBe(false);
-    expect(unconfigured!.configuration.missing).toEqual(["BOM", "ROUTING"]);
+    expect(unconfigured!.configuration.missing).toEqual(["ACTIVE_BOM", "ACTIVE_ROUTING"]);
     expect(unconfigured!.lastCheckStatus).toBeNull();
     expect(unconfigured!.lastCheckScore).toBeNull();
 

@@ -49,6 +49,19 @@ export class ApiError extends Error {
     return new ApiError(429, code, message);
   }
 
+  /**
+   * 503 — the request was valid but a dependency this deployment needs (its
+   * database, its auth secret) could not be reached or trusted. Distinct from
+   * 500 because it is a retryable, operator-actionable service fault rather
+   * than a bug in the request or the application.
+   */
+  static serviceUnavailable(
+    code = "SERVICE_UNAVAILABLE",
+    message = "The service is temporarily unavailable. Please retry shortly."
+  ): ApiError {
+    return new ApiError(503, code, message);
+  }
+
   static internal(code = "INTERNAL_ERROR", message = "An unexpected error occurred."): ApiError {
     return new ApiError(500, code, message);
   }

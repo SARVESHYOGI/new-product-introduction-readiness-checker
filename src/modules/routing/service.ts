@@ -4,6 +4,7 @@ import { withMappedErrors } from "@/lib/db/errors";
 import { recordAudit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
 import type { AdvisoryConflict } from "@/modules/operators/service";
+import { assertVersionTransition } from "@/lib/version-lifecycle";
 import type {
   RoutingCreateInput,
   RoutingOperationCreateInput,
@@ -102,6 +103,26 @@ export class RoutingService {
         if (!existing) {
           throw ApiError.notFound("NOT_FOUND", `Routing ${id} was not found.`);
         }
+
+        // Lifecycle policy shared with BOM versions and work instructions:
+        // ACTIVE → DRAFT and any transition out of OBSOLETE are rejected.
+        const nextStatus = input.status ?? existing.status;
+        assertVersionTransition(existing.status, nextStatus, "Routing");
+
+        // The version label is identity once published: renaming an ACTIVE or
+        // OBSOLETE routing's version would rewrite the identity operators and
+        // historical checks reference. A no-op re-save is permitted.
+        if (
+          (existing.status === "ACTIVE" || existing.status === "OBSOLETE") &&
+          input.version !== undefined &&
+          input.version !== existing.version
+        ) {
+          throw ApiError.conflict(
+            "PUBLISHED_ROUTING_IMMUTABLE",
+            "A published routing's version label is frozen. Supersede this routing and create a new one if the version must change."
+          );
+        }
+
         const routing = await tx.routing.update({
           where: { id },
           data: {
@@ -110,7 +131,7 @@ export class RoutingService {
           },
         });
         const conflicts =
-          input.status === "ACTIVE" && existing.status !== "ACTIVE"
+          nextStatus === "ACTIVE" && existing.status !== "ACTIVE"
             ? await findActiveRoutingConflicts(tx, existing.productId, id)
             : [];
         await recordAudit(tx, {
@@ -141,6 +162,7 @@ export class RoutingService {
     return withMappedErrors("routing operation", async () =>
       this.client.$transaction(async (tx) => {
         const routing = await assertRoutingExists(tx, routingId);
+        assertRoutingMutable(routing);
         if (input.stationId) {
           const station = await tx.station.findUnique({ where: { id: input.stationId } });
           if (!station) {
@@ -200,6 +222,7 @@ export class RoutingService {
     return withMappedErrors("routing operation", async () =>
       this.client.$transaction(async (tx) => {
         const routing = await assertRoutingExists(tx, routingId);
+        assertRoutingMutable(routing);
         const existing = await tx.routingOperation.findUnique({ where: { id: operationId } });
         if (!existing || existing.routingId !== routingId) {
           throw ApiError.notFound(
@@ -255,6 +278,8 @@ export class RoutingService {
   async removeOperation(routingId: string, operationId: string, actorId: string): Promise<void> {
     return withMappedErrors("routing operation", async () =>
       this.client.$transaction(async (tx) => {
+        const routing = await assertRoutingExists(tx, routingId);
+        assertRoutingMutable(routing);
         const existing = await tx.routingOperation.findUnique({ where: { id: operationId } });
         if (!existing || existing.routingId !== routingId) {
           throw ApiError.notFound(
@@ -282,12 +307,30 @@ export class RoutingService {
 async function assertRoutingExists(
   tx: Prisma.TransactionClient,
   routingId: string
-): Promise<{ id: string; code: string }> {
+): Promise<{ id: string; code: string; status: Routing["status"] }> {
   const routing = await tx.routing.findUnique({ where: { id: routingId } });
   if (!routing) {
     throw ApiError.notFound("NOT_FOUND", `Routing ${routingId} was not found.`);
   }
   return routing;
+}
+
+/**
+ * An obsoleted routing is permanent history (readiness checks reference it with
+ * `onDelete: Restrict`). Its operation list is therefore read-only; operations
+ * must live in a new routing version instead.
+ */
+function assertRoutingMutable(routing: {
+  id: string;
+  code: string;
+  status: Routing["status"];
+}): void {
+  if (routing.status === "OBSOLETE") {
+    throw ApiError.conflict(
+      "OBSOLETE_ROUTING_IMMUTABLE",
+      `Routing ${routing.code} is obsoleted and is permanent history. Its operations cannot be changed — create a new routing version instead.`
+    );
+  }
 }
 
 /**

@@ -9,8 +9,10 @@ import type { ConfigurationGap } from "./client/types";
  * into "a BOM and ROUTING".
  */
 export const CONFIGURATION_GAP_LABEL: Record<ConfigurationGap, string> = {
-  BOM: "a BOM version",
-  ROUTING: "a routing",
+  ACTIVE_BOM: "an active BOM version",
+  BOM_REQUIRED_ITEMS: "a BOM version with required components",
+  ACTIVE_ROUTING: "an active routing",
+  ROUTING_OPERATIONS: "a routing with operations",
 };
 
 export function describeConfigurationGaps(gaps: readonly ConfigurationGap[]): string {

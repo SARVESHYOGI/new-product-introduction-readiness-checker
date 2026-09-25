@@ -142,11 +142,46 @@ describe("Rule 3 — Work Instructions", () => {
     const results = await workInstructionRule.evaluate(
       baseContext({
         workInstructionsByOperation: new Map([
+          [
+            "op_1",
+            [
+              workInstruction({ version: 1, id: "wi_old" }),
+              workInstruction({ version: 2, id: "wi_new" }),
+            ],
+          ],
+        ]),
+      })
+    );
+
+    // The older active version warns it is shadowed by the newer one…
+    const warning = find(results, "WORK_INSTRUCTION_LATEST_VERSION");
+    expect(warning).toMatchObject({
+      status: "WARNING",
+      severity: "LOW",
+      isBlocking: false,
+      affectedEntityId: "wi_old",
+    });
+
+    // …and two simultaneously active versions are still a blocking integrity
+    // conflict (Safety S3), regardless of the non-blocking warning.
+    expect(find(results, "WORK_INSTRUCTION_MULTIPLE_ACTIVE")).toMatchObject({
+      status: "FAIL",
+      severity: "CRITICAL",
+      isBlocking: true,
+    });
+  });
+
+  it("does not warn when the only active version is the newest", async () => {
+    const results = await workInstructionRule.evaluate(
+      baseContext({
+        workInstructionsByOperation: new Map([
           ["op_1", [workInstruction({ version: 1 })]],
         ]),
       })
     );
-    // Sanity: single active version — no “older version” warning.
+    // Sanity: a single active version is the newest — no "older version"
+    // warning, and the check PASSes.
     expect(find(results, "WORK_INSTRUCTION_LATEST_VERSION")).toBeFalsy();
+    expect(find(results, "WORK_INSTRUCTION_OK")).toMatchObject({ status: "PASS" });
   });
 });

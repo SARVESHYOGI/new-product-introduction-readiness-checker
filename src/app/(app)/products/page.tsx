@@ -89,11 +89,11 @@ export default function ProductsPage() {
                       variant={product.configuration.isConfigured ? "success" : "warning"}
                       title={
                         product.configuration.isConfigured
-                          ? "This product has a BOM version and a routing."
+                          ? "This product has an active BOM version with required components and an active routing with operations."
                           : `Missing: ${product.configuration.missing.join(", ")}`
                       }
                     >
-                      {product.configuration.isConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+                      {product.configuration.isConfigured ? "CHECKABLE" : "NOT CHECKABLE"}
                     </Badge>
                   </div>
                   <span className="font-mono text-xs text-muted-foreground">{product.sku}</span>

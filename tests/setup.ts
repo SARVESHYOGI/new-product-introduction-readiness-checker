@@ -19,6 +19,6 @@ process.env.AUTH_SECRET = process.env.AUTH_SECRET ?? "test-only-secret-for-vites
 afterAll(async () => {
   // Ensures the shared Prisma client is closed before the process exits so
   // vitest can terminate cleanly after integration tests.
-  const { prisma } = await import("@/lib/db/prisma");
-  await prisma.$disconnect().catch(() => undefined);
+  const { disconnectPrisma } = await import("@/lib/db/prisma");
+  await disconnectPrisma();
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus } from "lucide-react";
 import { useInventoryItems } from "@/lib/client/queries";
 import type { InventoryItemListItem, InventoryStatus } from "@/lib/client/types";
 import { Button } from "@/components/ui/button";
@@ -89,7 +89,6 @@ export function InventoryItemsPanel() {
                           >
                             <Pencil className="h-4 w-4" aria-hidden="true" />
                           </Button>
-                          {item.productMappings.length === 0 ? <RemoveInventoryItemButton item={item} /> : null}
                         </div>
                       </td>
                     ) : null}
@@ -183,27 +182,5 @@ function EditInventoryItemDialog({ item, onOpenChange }: { item: InventoryItemLi
         </>
       )}
     </WriteDialog>
-  );
-}
-
-function RemoveInventoryItemButton({ item }: { item: InventoryItemListItem }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)} aria-label={`Delete inventory item ${item.sku}`}>
-        <Trash2 className="h-4 w-4" aria-hidden="true" />
-      </Button>
-      <WriteDialog
-        open={open}
-        onOpenChange={setOpen}
-        title={`Delete ${item.sku}?`}
-        description="Only unmapped inventory items can be deleted. Deactivate mapped items to preserve product relationships."
-        submitLabel="Delete inventory item"
-        variant="destructive"
-        buildRequest={() => ({ path: `/api/inventory-items/${item.id}`, method: "DELETE" })}
-      >
-        {() => <p className="text-sm text-muted-foreground">This cannot be undone.</p>}
-      </WriteDialog>
-    </>
   );
 }

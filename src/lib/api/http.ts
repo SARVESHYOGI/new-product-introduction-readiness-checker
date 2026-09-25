@@ -1,4 +1,5 @@
 import { ApiError, isApiError } from "@/lib/errors";
+import { classifyInfrastructureError } from "@/lib/infrastructure";
 import { logger, newRequestId } from "@/lib/logging/logger";
 
 /** Maximum accepted JSON body size (256 KB) for write endpoints. */
@@ -51,6 +52,23 @@ export function fail(error: unknown, requestId?: string): Response {
     const body: ErrorBody = { error: { code: error.code, message: error.message } };
     if (error.details !== undefined) body.error.details = error.details;
     return Response.json(body, { status: error.status });
+  }
+
+  // Infrastructure faults (missing/unreachable database, absent AUTH_SECRET)
+  // are reported as a 503 with a stable code so an operator can tell them
+  // apart from a genuine application bug. Only the fixed `reason` token is
+  // logged: the driver's own message can embed the connection string.
+  const infrastructure = classifyInfrastructureError(error);
+  if (infrastructure) {
+    logger.error(
+      "infrastructure_error",
+      { requestId, code: infrastructure.code, reason: infrastructure.reason },
+      requestId
+    );
+    const body: ErrorBody = {
+      error: { code: infrastructure.code, message: infrastructure.message },
+    };
+    return Response.json(body, { status: 503 });
   }
 
   logger.error("unhandled_error", { requestId, error: String(error) }, requestId);

@@ -198,7 +198,7 @@ function BomVersionEditor({ bom }: { bom: BomDetail }) {
         </div>
       )}
 
-      <EditBomVersionDialog open={editing} onOpenChange={setEditing} bom={bom} />
+      <EditBomVersionDialog key={bom.id} open={editing} onOpenChange={setEditing} bom={bom} />
       <AddBomItemDialog open={addItemOpen} onOpenChange={setAddItemOpen} bomId={bom.id} />
       <EditBomItemDialog
         item={editingItem}

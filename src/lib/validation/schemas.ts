@@ -4,33 +4,44 @@ import { ApiError } from "@/lib/errors";
 /**
  * Central Zod schemas for every write endpoint.
  * Backend validation is mandatory and never trusts the frontend.
+ *
+ * Every write schema is `.strict()`: an unknown key is a 400, never silently
+ * stripped. That keeps the API honest about the contract it accepts instead of
+ * dropping fields the caller believed were applied (which is how prototype
+ * pollution and "it worked in the UI" drift creep in).
  */
 
 const id = z.string().trim().min(1).max(64);
 const optionalId = id.optional().nullable();
 
-export const readinessCheckInputSchema = z.object({
-  productId: id,
-  bomVersionId: id,
-  routingId: id,
-  lineId: id,
-});
+export const readinessCheckInputSchema = z
+  .object({
+    productId: id,
+    bomVersionId: id,
+    routingId: id,
+    lineId: id,
+  })
+  .strict();
 
 export type ReadinessCheckInput = z.infer<typeof readinessCheckInputSchema>;
 
-export const productCreateSchema = z.object({
-  sku: z.string().trim().min(1).max(64),
-  name: z.string().trim().min(1).max(200),
-  description: z.string().trim().max(2000).optional(),
-  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE"]).default("DRAFT"),
-});
+export const productCreateSchema = z
+  .object({
+    sku: z.string().trim().min(1).max(64),
+    name: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(2000).optional(),
+    status: z.enum(["DRAFT", "ACTIVE", "INACTIVE"]).default("DRAFT"),
+  })
+  .strict();
 
 export type ProductCreateInput = z.infer<typeof productCreateSchema>;
 
-export const loginSchema = z.object({
-  email: z.email(),
-  password: z.string().min(1).max(200),
-});
+export const loginSchema = z
+  .object({
+    email: z.email(),
+    password: z.string().min(1).max(200),
+  })
+  .strict();
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
@@ -119,11 +130,13 @@ const capability = z
 // Product
 // ---------------------------------------------------------------------------
 
-export const productUpdateSchema = z.object({
-  name: name.optional(),
-  description: z.string().trim().max(2000).optional().nullable(),
-  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE"]).optional(),
-});
+export const productUpdateSchema = z
+  .object({
+    name: name.optional(),
+    description: z.string().trim().max(2000).optional().nullable(),
+    status: z.enum(["DRAFT", "ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
 
 export type ProductUpdateInput = z.infer<typeof productUpdateSchema>;
 
@@ -131,39 +144,47 @@ export type ProductUpdateInput = z.infer<typeof productUpdateSchema>;
 // BOM versions & items
 // ---------------------------------------------------------------------------
 
-export const bomVersionCreateSchema = z.object({
-  version,
-  status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).default("DRAFT"),
-  effectiveFrom: optionalIsoDate,
-  effectiveTo: optionalIsoDate,
-});
+export const bomVersionCreateSchema = z
+  .object({
+    version,
+    status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).default("DRAFT"),
+    effectiveFrom: optionalIsoDate,
+    effectiveTo: optionalIsoDate,
+  })
+  .strict();
 
 export type BomVersionCreateInput = z.infer<typeof bomVersionCreateSchema>;
 
-export const bomVersionUpdateSchema = z.object({
-  status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
-  effectiveFrom: optionalIsoDate,
-  effectiveTo: optionalIsoDate,
-});
+export const bomVersionUpdateSchema = z
+  .object({
+    status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
+    effectiveFrom: optionalIsoDate,
+    effectiveTo: optionalIsoDate,
+  })
+  .strict();
 
 export type BomVersionUpdateInput = z.infer<typeof bomVersionUpdateSchema>;
 
-export const bomItemCreateSchema = z.object({
-  componentSku: code,
-  componentName: name,
-  quantity,
-  unit: z.string().trim().min(1, "Required.").max(32),
-  isRequired: z.boolean().default(true),
-});
+export const bomItemCreateSchema = z
+  .object({
+    componentSku: code,
+    componentName: name,
+    quantity,
+    unit: z.string().trim().min(1, "Required.").max(32),
+    isRequired: z.boolean().default(true),
+  })
+  .strict();
 
 export type BomItemCreateInput = z.infer<typeof bomItemCreateSchema>;
 
-export const bomItemUpdateSchema = z.object({
-  componentName: name.optional(),
-  quantity: quantity.optional(),
-  unit: z.string().trim().min(1).max(32).optional(),
-  isRequired: z.boolean().optional(),
-});
+export const bomItemUpdateSchema = z
+  .object({
+    componentName: name.optional(),
+    quantity: quantity.optional(),
+    unit: z.string().trim().min(1).max(32).optional(),
+    isRequired: z.boolean().optional(),
+  })
+  .strict();
 
 export type BomItemUpdateInput = z.infer<typeof bomItemUpdateSchema>;
 
@@ -171,55 +192,63 @@ export type BomItemUpdateInput = z.infer<typeof bomItemUpdateSchema>;
 // Routing & operations
 // ---------------------------------------------------------------------------
 
-export const routingCreateSchema = z.object({
-  code,
-  version,
-  status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).default("DRAFT"),
-});
+export const routingCreateSchema = z
+  .object({
+    code,
+    version,
+    status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).default("DRAFT"),
+  })
+  .strict();
 
 export type RoutingCreateInput = z.infer<typeof routingCreateSchema>;
 
-export const routingUpdateSchema = z.object({
-  version: version.optional(),
-  status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
-});
+export const routingUpdateSchema = z
+  .object({
+    version: version.optional(),
+    status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
+  })
+  .strict();
 
 export type RoutingUpdateInput = z.infer<typeof routingUpdateSchema>;
 
-export const routingOperationCreateSchema = z.object({
-  sequence: z
-    .number({ message: "Sequence must be a number." })
-    .int("Sequence must be a whole number.")
-    .min(1, "Sequence must be 1 or greater.")
-    .max(999_999, "Sequence is too large."),
-  operationCode: code,
-  operationName: name,
-  standardCycleTimeSeconds: z
-    .number()
-    .int()
-    .min(0, "Cycle time cannot be negative.")
-    .max(86_400, "Cycle time must be under 24 hours.")
-    .optional()
-    .nullable(),
-  required: z.boolean().default(true),
-  stationId: optionalId,
-});
+export const routingOperationCreateSchema = z
+  .object({
+    sequence: z
+      .number({ message: "Sequence must be a number." })
+      .int("Sequence must be a whole number.")
+      .min(1, "Sequence must be 1 or greater.")
+      .max(999_999, "Sequence is too large."),
+    operationCode: code,
+    operationName: name,
+    standardCycleTimeSeconds: z
+      .number()
+      .int()
+      .min(0, "Cycle time cannot be negative.")
+      .max(86_400, "Cycle time must be under 24 hours.")
+      .optional()
+      .nullable(),
+    required: z.boolean().default(true),
+    stationId: optionalId,
+  })
+  .strict();
 
 export type RoutingOperationCreateInput = z.infer<typeof routingOperationCreateSchema>;
 
-export const routingOperationUpdateSchema = z.object({
-  operationCode: code.optional(),
-  operationName: name.optional(),
-  standardCycleTimeSeconds: z
-    .number()
-    .int()
-    .min(0, "Cycle time cannot be negative.")
-    .max(86_400)
-    .optional()
-    .nullable(),
-  required: z.boolean().optional(),
-  stationId: optionalId,
-});
+export const routingOperationUpdateSchema = z
+  .object({
+    operationCode: code.optional(),
+    operationName: name.optional(),
+    standardCycleTimeSeconds: z
+      .number()
+      .int()
+      .min(0, "Cycle time cannot be negative.")
+      .max(86_400)
+      .optional()
+      .nullable(),
+    required: z.boolean().optional(),
+    stationId: optionalId,
+  })
+  .strict();
 
 export type RoutingOperationUpdateInput = z.infer<typeof routingOperationUpdateSchema>;
 
@@ -227,32 +256,36 @@ export type RoutingOperationUpdateInput = z.infer<typeof routingOperationUpdateS
 // Work instructions
 // ---------------------------------------------------------------------------
 
-export const workInstructionCreateSchema = z.object({
-  title: name,
-  content: z
-    .string()
-    .trim()
-    .min(1, "Content is required.")
-    .max(20_000, "Content must be 20,000 characters or fewer."),
-  // A version is created as a draft or published immediately. OBSOLETE is not a
-  // creation state — it only ever results from superseding a published version.
-  status: z.enum(["DRAFT", "ACTIVE"]).default("DRAFT"),
-  required: z.boolean().default(true),
-});
+export const workInstructionCreateSchema = z
+  .object({
+    title: name,
+    content: z
+      .string()
+      .trim()
+      .min(1, "Content is required.")
+      .max(20_000, "Content must be 20,000 characters or fewer."),
+    // A version is created as a draft or published immediately. OBSOLETE is not a
+    // creation state — it only ever results from superseding a published version.
+    status: z.enum(["DRAFT", "ACTIVE"]).default("DRAFT"),
+    required: z.boolean().default(true),
+  })
+  .strict();
 
 export type WorkInstructionCreateInput = z.infer<typeof workInstructionCreateSchema>;
 
-export const workInstructionUpdateSchema = z.object({
-  title: name.optional(),
-  content: z
-    .string()
-    .trim()
-    .min(1, "Content is required.")
-    .max(20_000)
-    .optional(),
-  status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
-  required: z.boolean().optional(),
-});
+export const workInstructionUpdateSchema = z
+  .object({
+    title: name.optional(),
+    content: z
+      .string()
+      .trim()
+      .min(1, "Content is required.")
+      .max(20_000)
+      .optional(),
+    status: z.enum(["DRAFT", "ACTIVE", "OBSOLETE"]).optional(),
+    required: z.boolean().optional(),
+  })
+  .strict();
 
 export type WorkInstructionUpdateInput = z.infer<typeof workInstructionUpdateSchema>;
 
@@ -260,37 +293,45 @@ export type WorkInstructionUpdateInput = z.infer<typeof workInstructionUpdateSch
 // Lines & stations
 // ---------------------------------------------------------------------------
 
-export const lineCreateSchema = z.object({
-  code,
-  name,
-  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
-});
+export const lineCreateSchema = z
+  .object({
+    code,
+    name,
+    status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  })
+  .strict();
 
 export type LineCreateInput = z.infer<typeof lineCreateSchema>;
 
-export const lineUpdateSchema = z.object({
-  name: name.optional(),
-  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
-});
+export const lineUpdateSchema = z
+  .object({
+    name: name.optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
 
 export type LineUpdateInput = z.infer<typeof lineUpdateSchema>;
 
-export const stationCreateSchema = z.object({
-  code,
-  name,
-  status: z.enum(["ACTIVE", "INACTIVE", "MAINTENANCE"]).default("ACTIVE"),
-  lineId: optionalId,
-  capabilities: z.array(capability).max(50, "Too many capabilities.").default([]),
-});
+export const stationCreateSchema = z
+  .object({
+    code,
+    name,
+    status: z.enum(["ACTIVE", "INACTIVE", "MAINTENANCE"]).default("ACTIVE"),
+    lineId: optionalId,
+    capabilities: z.array(capability).max(50, "Too many capabilities.").default([]),
+  })
+  .strict();
 
 export type StationCreateInput = z.infer<typeof stationCreateSchema>;
 
-export const stationUpdateSchema = z.object({
-  name: name.optional(),
-  status: z.enum(["ACTIVE", "INACTIVE", "MAINTENANCE"]).optional(),
-  lineId: optionalId,
-  capabilities: z.array(capability).max(50).optional(),
-});
+export const stationUpdateSchema = z
+  .object({
+    name: name.optional(),
+    status: z.enum(["ACTIVE", "INACTIVE", "MAINTENANCE"]).optional(),
+    lineId: optionalId,
+    capabilities: z.array(capability).max(50).optional(),
+  })
+  .strict();
 
 export type StationUpdateInput = z.infer<typeof stationUpdateSchema>;
 
@@ -298,18 +339,22 @@ export type StationUpdateInput = z.infer<typeof stationUpdateSchema>;
 // Operators & assignments
 // ---------------------------------------------------------------------------
 
-export const operatorCreateSchema = z.object({
-  employeeCode: code,
-  name,
-  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
-});
+export const operatorCreateSchema = z
+  .object({
+    employeeCode: code,
+    name,
+    status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  })
+  .strict();
 
 export type OperatorCreateInput = z.infer<typeof operatorCreateSchema>;
 
-export const operatorUpdateSchema = z.object({
-  name: name.optional(),
-  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
-});
+export const operatorUpdateSchema = z
+  .object({
+    name: name.optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
 
 export type OperatorUpdateInput = z.infer<typeof operatorUpdateSchema>;
 
@@ -319,11 +364,13 @@ export type OperatorUpdateInput = z.infer<typeof operatorUpdateSchema>;
  * revoked through PATCH. Creating a row that is born EXPIRED or REVOKED would
  * only add noise the readiness engine has to explain away.
  */
-export const assignmentCreateSchema = z.object({
-  stationId: id,
-  validFrom: isoDate,
-  validTo: isoEndOfDay,
-});
+export const assignmentCreateSchema = z
+  .object({
+    stationId: id,
+    validFrom: isoDate,
+    validTo: isoEndOfDay,
+  })
+  .strict();
 
 export type AssignmentCreateInput = z.infer<typeof assignmentCreateSchema>;
 
@@ -334,6 +381,7 @@ export const assignmentUpdateSchema = z
     validTo: isoEndOfDay.optional(),
     status: z.enum(["ACTIVE", "REVOKED"]).optional(),
   })
+  .strict()
   .refine((v) => Object.values(v).some((value) => value !== undefined), {
     message: "Provide at least one field to change.",
   });
@@ -352,6 +400,7 @@ export const identifierRangeCreateSchema = z
     currentNumber: z.number().int().min(0, "Cannot be negative."),
     status: z.enum(["ACTIVE", "INACTIVE", "EXHAUSTED"]).default("ACTIVE"),
   })
+  .strict()
   .refine((v) => v.startNumber < v.endNumber, {
     message: "Start number must be lower than the end number.",
     path: ["endNumber"],
@@ -367,6 +416,7 @@ export const identifierRangeUpdateSchema = z
     currentNumber: z.number().int().min(0).optional(),
     status: z.enum(["ACTIVE", "INACTIVE", "EXHAUSTED"]).optional(),
   })
+  .strict()
   .refine((v) => v.startNumber === undefined || v.endNumber === undefined || v.startNumber < v.endNumber, {
     message: "Start number must be lower than the end number.",
     path: ["endNumber"],
@@ -381,32 +431,40 @@ export type IdentifierRangeUpdateInput = z.infer<typeof identifierRangeUpdateSch
 // Inventory items & output mappings
 // ---------------------------------------------------------------------------
 
-export const inventoryItemCreateSchema = z.object({
-  sku: code,
-  name,
-  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
-});
+export const inventoryItemCreateSchema = z
+  .object({
+    sku: code,
+    name,
+    status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  })
+  .strict();
 
 export type InventoryItemCreateInput = z.infer<typeof inventoryItemCreateSchema>;
 
-export const inventoryItemUpdateSchema = z.object({
-  name: name.optional(),
-  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
-});
+export const inventoryItemUpdateSchema = z
+  .object({
+    name: name.optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
 
 export type InventoryItemUpdateInput = z.infer<typeof inventoryItemUpdateSchema>;
 
-export const inventoryMappingCreateSchema = z.object({
-  inventoryItemId: id,
-  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
-});
+export const inventoryMappingCreateSchema = z
+  .object({
+    inventoryItemId: id,
+    status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  })
+  .strict();
 
 export type InventoryMappingCreateInput = z.infer<typeof inventoryMappingCreateSchema>;
 
-export const inventoryMappingUpdateSchema = z.object({
-  inventoryItemId: id.optional(),
-  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
-});
+export const inventoryMappingUpdateSchema = z
+  .object({
+    inventoryItemId: id.optional(),
+    status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  })
+  .strict();
 
 export type InventoryMappingUpdateInput = z.infer<typeof inventoryMappingUpdateSchema>;
 

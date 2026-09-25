@@ -12,7 +12,6 @@ import type { Prisma } from "@/generated/prisma/client";
 export type AuditAction =
   | "product.create"
   | "product.update"
-  | "product.delete"
   | "bom.create"
   | "bom.update"
   | "bom.status_change"

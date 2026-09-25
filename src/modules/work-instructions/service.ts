@@ -146,10 +146,16 @@ export class WorkInstructionService {
           },
         });
 
-        const superseded = await supersedeActiveInstructions(tx, {
-          routingOperationId,
-          keepId: instruction.id,
-        });
+        // A draft is a future revision only. Publishing is the explicit action
+        // that replaces the current instruction; merely saving a draft must not
+        // make a valid active configuration disappear.
+        const superseded =
+          input.status === "ACTIVE"
+            ? await supersedeActiveInstructions(tx, {
+                routingOperationId,
+                keepId: instruction.id,
+              })
+            : [];
 
         const conflicts = await findInstructionConflicts(tx, {
           routingOperationId,
@@ -229,9 +235,12 @@ export class WorkInstructionService {
           );
         }
 
-        // DRAFT → ACTIVE publishes the instruction and obsoletes whatever was
-        // active before; every other transition is handled above.
+        // DRAFT may be published or discarded, but a published version can
+        // never be moved backwards to DRAFT. Enforce the transition separately
+        // from content immutability so a status-only request cannot rewrite a
+        // published document's lifecycle.
         const nextStatus = input.status ?? existing.status;
+        assertInstructionStatusTransition(existing.status, nextStatus);
 
         const instruction = await tx.workInstruction.update({
           where: { id },
@@ -305,6 +314,25 @@ export class WorkInstructionService {
           metadata: { version: existing.version, status: existing.status },
         });
       })
+    );
+  }
+}
+
+function assertInstructionStatusTransition(
+  current: "DRAFT" | "ACTIVE" | "OBSOLETE",
+  next: "DRAFT" | "ACTIVE" | "OBSOLETE"
+): void {
+  if (current === next) return;
+
+  const allowed =
+    (current === "DRAFT" && next === "ACTIVE") ||
+    (current === "DRAFT" && next === "OBSOLETE") ||
+    (current === "ACTIVE" && next === "OBSOLETE");
+
+  if (!allowed) {
+    throw ApiError.conflict(
+      "INVALID_INSTRUCTION_STATUS_TRANSITION",
+      `Work instruction cannot transition from ${current} to ${next}. Published versions are superseded by creating a new version.`
     );
   }
 }

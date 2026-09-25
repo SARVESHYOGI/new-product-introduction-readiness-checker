@@ -140,7 +140,7 @@ test("unauthenticated users cannot reach protected pages", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("an unconfigured product is visibly NOT CONFIGURED and cannot be checked", async ({ page }) => {
+test("an unconfigured product is visibly NOT CHECKABLE and cannot be checked", async ({ page }) => {
   test.setTimeout(120_000);
 
   await page.goto("/login");
@@ -150,7 +150,7 @@ test("an unconfigured product is visibly NOT CONFIGURED and cannot be checked", 
   // checked". prod_006 (PlayStation 5) is seeded with no BOM and no routing.
   await page.goto("/products");
   const ps5Card = page.getByTestId("product-card-prod_006");
-  await expect(ps5Card.getByText("NOT CONFIGURED")).toBeVisible();
+  await expect(ps5Card.getByText("NOT CHECKABLE")).toBeVisible();
   await expect(ps5Card.getByText(/Cannot be checked — missing/)).toBeVisible();
   // It must never be presented as ready or as having a passing score.
   await expect(ps5Card.getByText("No check possible yet")).toBeVisible();
@@ -159,7 +159,7 @@ test("an unconfigured product is visibly NOT CONFIGURED and cannot be checked", 
   // Its detail page states the gap and refuses to offer a run.
   await ps5Card.getByRole("link", { name: "PlayStation 5" }).click();
   await page.waitForURL(/\/products\/prod_006$/);
-  await expect(page.getByText(/is missing a BOM version and a routing/)).toBeVisible();
+  await expect(page.getByText(/is missing an active BOM version and an active routing/)).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Run check", exact: true })
   ).toHaveAttribute("aria-disabled", "true");
@@ -169,11 +169,11 @@ test("an unconfigured product is visibly NOT CONFIGURED and cannot be checked", 
   await page.goto("/readiness?product=prod_006");
   await expect(page.getByRole("heading", { name: "Run Readiness Check" })).toBeVisible();
   await expect(page.getByText("is not fully configured")).toBeVisible();
-  await expect(page.getByText(/No BOM versions exist for PlayStation 5/)).toBeVisible();
-  await expect(page.getByText(/No routings exist for PlayStation 5/)).toBeVisible();
+  await expect(page.getByText(/No checkable BOM version exists for PlayStation 5/).first()).toBeVisible();
+  await expect(page.getByText(/No checkable routing exists for PlayStation 5/).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run Readiness Check" })).toBeDisabled();
   await expect(
-    page.getByText("This product has no BOM version. Configure a BOM version before running a check.")
+    page.getByText("No checkable BOM version exists for PlayStation 5. Create an active BOM version with required components first.")
   ).toBeVisible();
 });
 

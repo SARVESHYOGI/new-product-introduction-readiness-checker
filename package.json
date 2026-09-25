@@ -17,6 +17,7 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
+    "db:test:setup": "node scripts/db-test-setup.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

@@ -57,7 +57,8 @@ export default function ProductConfigurationPage() {
           {!configured ? (
             <p className="mt-3 inline-flex rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning" role="status">
               Still missing {describeConfigurationGaps(p.configuration.missing)}. A readiness check
-              cannot run until both a BOM and routing exist.
+              cannot run until the product has an active BOM version with required components and
+              an active routing with operations.
             </p>
           ) : (
             <Badge variant="success" className="mt-3">Ready for a readiness check</Badge>

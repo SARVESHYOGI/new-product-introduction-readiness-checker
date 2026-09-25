@@ -3,6 +3,7 @@ import { prisma as defaultClient } from "@/lib/db/prisma";
 import { withMappedErrors } from "@/lib/db/errors";
 import { recordAudit } from "@/lib/audit";
 import { ApiError } from "@/lib/errors";
+import { assertVersionTransition } from "@/lib/version-lifecycle";
 import type { AdvisoryConflict } from "@/modules/operators/service";
 import type {
   BomItemCreateInput,
@@ -107,11 +108,33 @@ export class BomService {
           throw ApiError.notFound("NOT_FOUND", `BOM version ${id} was not found.`);
         }
 
+        // Lifecycle policy shared with routings and work instructions:
+        // ACTIVE → DRAFT and any transition out of OBSOLETE are rejected.
+        const nextStatus = input.status ?? existing.status;
+        assertVersionTransition(existing.status, nextStatus, "BOM version");
+
         const effectiveFrom =
           input.effectiveFrom === undefined ? existing.effectiveFrom : input.effectiveFrom;
         const effectiveTo =
           input.effectiveTo === undefined ? existing.effectiveTo : input.effectiveTo;
         assertEffectiveWindow(effectiveFrom, effectiveTo);
+
+        // The effective window, like work-instruction content, is part of the
+        // published contract: once a version is ACTIVE or OBSOLETE the window
+        // is frozen (a no-op re-save is still permitted). Moving a window on a
+        // published BOM would silently change what a product was validated
+        // against, so it must go through a new version instead.
+        const windowChanged =
+          (input.effectiveFrom !== undefined &&
+            !sameInstant(input.effectiveFrom, existing.effectiveFrom)) ||
+          (input.effectiveTo !== undefined && !sameInstant(input.effectiveTo, existing.effectiveTo));
+
+        if (windowChanged && (existing.status === "ACTIVE" || existing.status === "OBSOLETE")) {
+          throw ApiError.conflict(
+            "PUBLISHED_BOM_IMMUTABLE",
+            "A published BOM version's effective window is frozen. Supersede this version and create a new one if the window must change."
+          );
+        }
 
         const bom = await tx.bOMVersion.update({
           where: { id },
@@ -126,7 +149,7 @@ export class BomService {
         // reported: two active BOMs is Safety Rule 3 (duplicate active
         // configuration) and the engineer should know before the check runs.
         const conflicts =
-          input.status === "ACTIVE" && existing.status !== "ACTIVE"
+          nextStatus === "ACTIVE" && existing.status !== "ACTIVE"
             ? await findActiveBomConflicts(tx, existing.productId, id)
             : [];
 
@@ -163,6 +186,7 @@ export class BomService {
     return withMappedErrors("BOM item", async () =>
       this.client.$transaction(async (tx) => {
         const bom = await assertBomExists(tx, bomVersionId);
+        assertBomMutable(bom);
         const item = await tx.bOMItem.create({
           data: {
             bomVersionId,
@@ -199,7 +223,8 @@ export class BomService {
   ): Promise<BomWriteResult<unknown>> {
     return withMappedErrors("BOM item", async () =>
       this.client.$transaction(async (tx) => {
-        await assertBomExists(tx, bomVersionId);
+        const bom = await assertBomExists(tx, bomVersionId);
+        assertBomMutable(bom);
         const existing = await tx.bOMItem.findUnique({ where: { id: itemId } });
         if (!existing || existing.bomVersionId !== bomVersionId) {
           throw ApiError.notFound(
@@ -235,6 +260,8 @@ export class BomService {
   async removeItem(bomVersionId: string, itemId: string, actorId: string): Promise<void> {
     return withMappedErrors("BOM item", async () =>
       this.client.$transaction(async (tx) => {
+        const bom = await assertBomExists(tx, bomVersionId);
+        assertBomMutable(bom);
         const existing = await tx.bOMItem.findUnique({ where: { id: itemId } });
         if (!existing || existing.bomVersionId !== bomVersionId) {
           throw ApiError.notFound(
@@ -269,7 +296,7 @@ async function assertProductExists(tx: Prisma.TransactionClient, productId: stri
 async function assertBomExists(
   tx: Prisma.TransactionClient,
   bomVersionId: string
-): Promise<{ id: string; version: string }> {
+): Promise<{ id: string; version: string; status: BOMVersion["status"] }> {
   const bom = await tx.bOMVersion.findUnique({ where: { id: bomVersionId } });
   if (!bom) {
     throw ApiError.notFound("NOT_FOUND", `BOM version ${bomVersionId} was not found.`);
@@ -287,6 +314,27 @@ function assertEffectiveWindow(
       "The effective-from date must be on or before the effective-to date."
     );
   }
+}
+
+/**
+ * An obsoleted BOM version is permanent history (readiness checks reference it
+ * with `onDelete: Restrict`). Its component list is therefore read-only; items
+ * must live in a new version instead.
+ */
+function assertBomMutable(bom: { id: string; version: string; status: BOMVersion["status"] }): void {
+  if (bom.status === "OBSOLETE") {
+    throw ApiError.conflict(
+      "OBSOLETE_BOM_IMMUTABLE",
+      `BOM version ${bom.version} is obsoleted and is permanent history. Its components cannot be changed — create a new BOM version instead.`
+    );
+  }
+}
+
+/** Instant comparison that treats null/undefined as equivalent. */
+function sameInstant(a: Date | null | undefined, b: Date | null | undefined): boolean {
+  if (a == null) return b == null;
+  if (b == null) return false;
+  return a.getTime() === b.getTime();
 }
 
 async function findActiveBomConflicts(

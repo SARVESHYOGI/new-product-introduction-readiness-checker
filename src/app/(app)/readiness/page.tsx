@@ -54,15 +54,32 @@ export default function RunCheckPage() {
   // configuration status is derived server-side (see ProductService) and is
   // used to explain *why* the run button is disabled.
   const gaps: ConfigurationGap[] = selectedProduct?.configuration.missing ?? [];
+
+  // Only ACTIVE, non-empty BOM versions and routings are offered: a DRAFT (or
+  // empty) tuple can never produce a meaningful readiness result, and the
+  // editor must not suggest it can. The API/engine remain the fail-safe
+  // authority and still evaluate any existing-and-owned tuple directly.
+  const checkableBoms = (boms.data ?? []).filter(
+    (b) => b.status === "ACTIVE" && b.itemCount > 0
+  );
+  const checkableRoutings = (routings.data ?? []).filter(
+    (r) => r.status === "ACTIVE" && r.operationCount > 0
+  );
   const bomsResolved = !productId || boms.isLoading || Boolean(boms.data);
   const routingsResolved = !productId || routings.isLoading || Boolean(routings.data);
   const linesResolved = lines.isLoading || Boolean(lines.data);
 
-  // A product with no BOM / no routing can never produce a readiness decision,
-  // so the run button stays disabled rather than sending a request the API
-  // would (correctly) reject.
-  const hasNoBom = productId && bomsResolved && boms.data?.length === 0;
-  const hasNoRouting = productId && routingsResolved && routings.data?.length === 0;
+  // A product with no checkable BOM / no checkable routing can never produce a
+  // readiness decision, so the run button stays disabled rather than sending a
+  // request the API would evaluate (correctly, but uselessly) as not-ready.
+  // `Boolean(selectedProduct)` guards the loading window: until the products
+  // list resolves the preselected product (e.g. from `?product=` in the URL),
+  // we must not claim "no BOM/routing exists" — the branch below renders
+  // `selectedProduct.name` and would crash on an undefined product.
+  const hasNoBom =
+    productId && Boolean(selectedProduct) && bomsResolved && checkableBoms.length === 0;
+  const hasNoRouting =
+    productId && Boolean(selectedProduct) && routingsResolved && checkableRoutings.length === 0;
   const hasNoLines = linesResolved && lines.data?.length === 0;
 
   const canRun = Boolean(productId && bomVersionId && routingId && lineId) && !runCheck.isPending;
@@ -71,9 +88,9 @@ export default function RunCheckPage() {
   const blockedReason = !productId
     ? "Select a product to begin."
     : hasNoBom
-      ? "This product has no BOM version. Configure a BOM version before running a check."
+      ? `No checkable BOM version exists for ${selectedProduct!.name}. Create an active BOM version with required components first.`
       : hasNoRouting
-        ? "This product has no routing. Configure a routing before running a check."
+        ? `No checkable routing exists for ${selectedProduct!.name}. Create an active routing with operations first.`
         : hasNoLines
           ? "No production lines exist. Configure a production line before running a check."
           : gaps.length > 0
@@ -223,7 +240,7 @@ export default function RunCheckPage() {
                       />
                     </SelectTrigger>
                     <SelectContent>
-                      {boms.data?.map((b) => (
+                      {checkableBoms.map((b) => (
                         <SelectItem key={b.id} value={b.id}>
                           BOM V{b.version} · {b.itemCount} item{b.itemCount === 1 ? "" : "s"}
                         </SelectItem>
@@ -232,8 +249,8 @@ export default function RunCheckPage() {
                   </Select>
                   {hasNoBom ? (
                     <p className="text-sm text-danger">
-                      No BOM versions exist for {selectedProduct?.name}. Create a BOM version
-                      before running a readiness check.
+                      No checkable BOM version exists for {selectedProduct?.name}. Create an
+                      active BOM version with required components before running a readiness check.
                     </p>
                   ) : null}
                 </div>
@@ -257,7 +274,7 @@ export default function RunCheckPage() {
                       />
                     </SelectTrigger>
                     <SelectContent>
-                      {routings.data?.map((r) => (
+                      {checkableRoutings.map((r) => (
                         <SelectItem key={r.id} value={r.id}>
                           {r.code} · V{r.version} · {r.operationCount} op{r.operationCount === 1 ? "" : "s"}
                         </SelectItem>
@@ -266,8 +283,8 @@ export default function RunCheckPage() {
                   </Select>
                   {hasNoRouting ? (
                     <p className="text-sm text-danger">
-                      No routings exist for {selectedProduct?.name}. Create a routing before
-                      running a readiness check.
+                      No checkable routing exists for {selectedProduct?.name}. Create an active
+                      routing with operations before running a readiness check.
                     </p>
                   ) : null}
                 </div>
@@ -403,8 +420,8 @@ export default function RunCheckPage() {
                       className="mt-1"
                     >
                       {selectedProduct.configuration.isConfigured
-                        ? "CONFIGURED"
-                        : "NOT CONFIGURED"}
+                        ? "CHECKABLE"
+                        : "NOT CHECKABLE"}
                     </Badge>
                   </>
                 ) : (

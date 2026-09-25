@@ -209,7 +209,7 @@ function RoutingEditor({ routing }: { routing: RoutingDetail }) {
         </div>
       )}
 
-      <EditRoutingDialog open={editing} onOpenChange={setEditing} routing={routing} />
+      <EditRoutingDialog key={routing.id} open={editing} onOpenChange={setEditing} routing={routing} />
       <AddOperationDialog open={addOpen} onOpenChange={setAddOpen} routingId={routing.id} />
       <EditOperationDialog
         operation={editingOperation}
