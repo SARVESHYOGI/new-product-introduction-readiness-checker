@@ -99,3 +99,42 @@ test("unauthenticated users cannot reach protected pages", async ({ page }) => {
   await page.goto("/history");
   await expect(page).toHaveURL(/\/login/);
 });
+
+test("admins can create a product; engineers cannot", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  // Admin signs in and sees the Add product action.
+  await page.goto("/login");
+  await page.locator("#email").fill("admin@npi.local");
+  await page.locator("#password").fill("admin123");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"));
+
+  await page.goto("/products");
+  const addButton = page.getByRole("button", { name: "Add product" });
+  await expect(addButton).toBeVisible();
+
+  // Create a product with a unique SKU so repeated runs never collide.
+  const sku = `E2E-${Date.now()}`;
+  const name = `E2E Gadget ${Date.now() % 10000}`;
+  await addButton.click();
+  await page.getByLabel("SKU").fill(sku);
+  await page.getByLabel("Name").fill(name);
+  await page.getByRole("button", { name: "Create product" }).click();
+
+  // The new product appears in the catalog (refetch after create).
+  await expect(
+    page.getByRole("heading", { name, exact: true }).first()
+  ).toBeVisible();
+  await expect(page.getByText(sku, { exact: true }).first()).toBeVisible();
+
+  // Engineers are not offered the admin-only action.
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.locator("#email").fill("engineer@npi.local");
+  await page.locator("#password").fill("engineer123");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"));
+
+  await page.goto("/products");
+  await expect(page.getByRole("button", { name: "Add product" })).toHaveCount(0);
+});

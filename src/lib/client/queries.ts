@@ -69,6 +69,31 @@ export function useProduct(id: string) {
   });
 }
 
+export interface CreateProductInput {
+  sku: string;
+  name: string;
+  description?: string;
+  status?: "DRAFT" | "ACTIVE" | "INACTIVE";
+}
+
+export function useCreateProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProductInput) =>
+      apiFetch<{ product: ProductListItem }>("/api/products", {
+        method: "POST",
+        body: input,
+      }).then((d) => d.product),
+    onSuccess: async () => {
+      // A new product refreshes the catalog and the dashboard counts.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.products() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+  });
+}
+
 export function useBoms(productId: string | null) {
   return useQuery({
     queryKey: queryKeys.boms(productId ?? ""),

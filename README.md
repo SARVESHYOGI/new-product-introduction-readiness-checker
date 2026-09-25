@@ -356,6 +356,8 @@ Open the app, sign in (see demo credentials), and use **Run Check**:
 
 The readiness page disables the button while a check is running and shows staged progress (Validating BOM… Validating Routing… Validating Stations… Validating Operators… Analyzing blockers…).
 
+On the **Products** page, ADMIN users get an **Add product** button (the same role the server enforces on `POST /api/products`). The dialog validates with the *shared* Zod schema, defaults to `DRAFT` status, and the new product appears in the catalog and dashboard immediately after creation.
+
 ### Demo credentials
 
 | Role | Email | Password |
@@ -371,16 +373,20 @@ The readiness page disables the button while a check is running and shows staged
 ```bash
 npm run lint          # ESLint
 npm run typecheck     # tsc --noEmit
-npm run test          # Vitest: 92 unit + integration tests (uses TEST_DATABASE_URL)
-npm run test:e2e      # Playwright critical flow against dev server + seeded db
+npm run test          # Vitest: 95 unit + integration + UI tests (uses TEST_DATABASE_URL)
+npm run test:e2e      # Playwright critical flows against dev server + seeded db
 npm run build         # production build (all 24 routes)
 ```
 
 **Test coverage:**
 
-- **Unit tests (13 files):** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking), dependency analysis (root vs impact dedup), remediation, serialization.
+- **Unit + UI tests:** every rule (PASS/FAIL/WARNING for each branch, incl. expired assignments, maintenance stations, overlapping ranges, duplicate actives), the engine's fail-safe behavior (context-load failure → BLOCKED; rule crash → BLOCKED), scoring (score can never override blocking), dependency analysis (root vs impact dedup), remediation, serialization, and the Add Product dialog (shared-schema validation, payload contract, server-error surfacing).
 - **Integration tests:** `POST /api/readiness/check` against a real seeded PostgreSQL database — verifies status, score, blockers, and transaction persistence. Auth is mocked at the session boundary.
-- **E2E (Playwright):** logs in as ENGINEER, selects a product/BOM/routing/line, runs a check, sees results (71%, NOT READY), opens a blocker, views remediation; plus an unauthenticated-redirect test. Runs against the real dev server and seeded demo DB, so server-side role checks are exercised for real.
+- **E2E (Playwright):**
+  1. ENGINEER logs in, selects a product/BOM/routing/line, runs a check, sees results (71%, NOT READY), opens a blocker, views remediation.
+  2. Unauthenticated users are redirected to login.
+  3. ADMIN creates a product through the Add product dialog (unique SKU per run; appears in the catalog), while the ENGINEER does not see the admin-only action.
+  All E2E runs hit the real dev server and seeded demo DB, so server-side auth + role checks are exercised for real.
 
 ---
 

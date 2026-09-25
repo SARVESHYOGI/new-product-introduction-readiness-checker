@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Search, Boxes } from "lucide-react";
-import { useProducts } from "@/lib/client/queries";
+import { Search, Boxes, Plus } from "lucide-react";
+import { useMe, useProducts } from "@/lib/client/queries";
+import { AddProductDialog } from "@/components/products/add-product-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +20,11 @@ const productStatusVariant = {
 
 export default function ProductsPage() {
   const [search, setSearch] = React.useState("");
+  const [showAdd, setShowAdd] = React.useState(false);
+  const { data: user } = useMe();
   const { data: products, isLoading, isError, refetch } = useProducts(search || undefined);
+
+  const isAdminUser = user?.role === "ADMIN";
 
   return (
     <div className="space-y-6">
@@ -30,15 +35,23 @@ export default function ProductsPage() {
             Catalog and latest readiness status per product
           </p>
         </div>
-        <div className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input
-            aria-label="Search products"
-            placeholder="Search by name or SKU…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input
+              aria-label="Search products"
+              placeholder="Search by name or SKU…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          {isAdminUser ? (
+            <Button onClick={() => setShowAdd(true)}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Add product
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -107,6 +120,8 @@ export default function ProductsPage() {
           ))}
         </div>
       )}
+
+      <AddProductDialog open={showAdd} onOpenChange={setShowAdd} />
     </div>
   );
 }
